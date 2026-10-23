@@ -1,3 +1,8 @@
+## RS Dev Tools 0.4.1 (2026-10-23)
+- Right-click menu tile coords (on by default): the open menu gets an info line at the bottom with the tile under the mouse, as level, x, z, map square and local tile. It uses the documented MiniMenu:Add with an action that does nothing, and is swapped to the lowest priority so it is never the left-click default.
+- Item hover info (on by default): hovering an item on the ground, or in the inventory, bank or equipment, shows Item Name (ID) next to the pointer in the plugin's tooltip box.
+- Settings tab: Menu tile coords on/off and Item hover info on/off (saved).
+
 ## RS Dev Tools 0.4.0 (2026-10-23)
 - Single edition: everything that was in RS Dev Tools Unlimited is now in RS Dev Tools, and the Unlimited edition is retired.
 - Debug tabs merged in: Automation (console macros with presets, step delay, repeat and Stop; destructive steps still need Confirm), Visual Overrides (hide ground items, hide yourself, NPC name filter), Deep Probe with Deep scan (read-only walk of the whole API, flags undocumented names and saves to PersistentDB rdt_probe), and the Probe tab (Call () needs Confirm).

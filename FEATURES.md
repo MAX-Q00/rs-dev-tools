@@ -18,3 +18,10 @@ Status: **Safe to promote** (could go into the public build now), **Needs review
 | Deep Probe: metatable members of sample objects (PlayerEntity, NPC, loc, ground stack, Vector3, UI root, PersistentDB, Camera, World, Player), marked documented or not | Debug > Deep Probe | Would fail review | Use of undocumented functions (read only here, but publishing it encourages relying on them). |
 
 Already in the normal build before 0.4.0: Event Payloads, Camera & World, Component Tree, Profiler, Shapes & Canvas, PersistentDB (own data, Confirm on delete), Permissions, API Coverage, Commands More info and per-argument dropdowns, adjustable columns; plus World Render position ring, path trail and sky beam (client-side ShapeList.DrawLine debug markers, off by default), and the Commands tab with Confirm on risky cheats.
+
+## Added in 0.4.1
+
+| Feature | Where | Status | Rule it hits |
+|---|---|---|---|
+| Right-click menu tile coords (MiniMenu:Add info entry, do-nothing action, swapped to lowest priority) | World (on by default; Settings toggle) | Needs review | Menu customisation. It adds an entry but never removes, hides or reorders the game's own entries relative to each other, and the entry sends nothing. List it as an info line. |
+| Item hover info: Item Name (ID) by the pointer (read from the top MiniMenu entry) | World (on by default; Settings toggle) | Likely safe | Read-only display of the item already under the pointer, similar to the game's own tooltip. |

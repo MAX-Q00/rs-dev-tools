@@ -1102,6 +1102,11 @@ function helpers.tickHover()
             if ok and type(v) == "string" and v ~= "" then tipC, tipText = c, v; break end
         end
     end
+    -- 0.4.1 (RS Dev Tools): world item hover text (rdt_hover) when no panel tip applies
+    if found == nil and tipC == nil and helpers.worldHover ~= nil then
+        local okW, w = pcall(helpers.worldHover)
+        if okW and type(w) == "string" and w ~= "" then tipC, tipText = true, w end
+    end
     if found == nil and tipC == nil then hideHover(); return end
     if found ~= nil and tipC ~= nil and found.c ~= tipC then
         -- prefer the innermost / truncated one

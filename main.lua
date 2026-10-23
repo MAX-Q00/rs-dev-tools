@@ -32,7 +32,7 @@
 local PLUGIN_NAME = "RS Dev Tools"
 local SLUG = "rs-dev-tools"
 local helpers = require("ui_helpers")
-helpers.VERSION = "0.4.0"
+helpers.VERSION = "0.4.1"
 local H = helpers
 local Table = require("dt_table")
 local FaqDialog = require("faq_dialog")
@@ -2295,6 +2295,7 @@ function WR.shutdown()
     WR.off()
     pcall(function() Event.EntityDraw.Unsubscribe("rdtWorldEntity") end)
     pcall(function() Event.Draw.Unsubscribe("rdtWorldDraw") end)
+    pcall(function() Event.MiniMenuReady.Unsubscribe("rdtHoverReady"); helpers.worldHover = nil end)
 end
 local function onOff(v) return v and H.col(H.C_GOOD, "On") or H.lbl("Off") end
 NT.viewWorld = function()
@@ -2893,6 +2894,14 @@ local function buildPanel(w)
         "Column resize: drag a header border, or show small < > buttons on each border.")
     do local b = btn(T_SET, "Reset all widths", 104, function() pcall(helpers.resetColumns); refresh() end, nil, "__colreset")
         helpers.setTip(b, "Put every column in every table back to its default width.") end
+    -- 0.4.1: menu tile coords + item hover info (rdt_hover.lua), both on by default
+    pcall(function() NT.hover = require("rdt_hover")({ helpers = helpers, state = state }) end)
+    ddCtrl(T_SET, 150, { "Menu tile coords: on", "Menu tile coords: off" }, function() return state.menuCoords == false and 2 or 1 end,
+        function(i) state.menuCoords = i == 1; save() end, nil, "menu coords",
+        "Right-click menu: add an info line with the tile under the mouse (level, x, z, map square, local). It does nothing when clicked.")
+    ddCtrl(T_SET, 150, { "Item hover info: on", "Item hover info: off" }, function() return state.itemHover == false and 2 or 1 end,
+        function(i) state.itemHover = i == 1; save() end, nil, "item hover",
+        "Show Item Name (ID) next to the pointer when hovering an item on the ground or in the inventory, bank or equipment.")
     tbl.onResize = function() refresh() end
     for _, m in ipairs(NT.mods) do
         if m.build then
