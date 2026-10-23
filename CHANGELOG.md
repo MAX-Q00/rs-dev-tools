@@ -1,3 +1,6 @@
+## RS Dev Tools 0.2.13 (2026-10-23)
+- Option pickers are RuneScape-style dropdowns (shared helpers.dropdown in ui_helpers.lua): a stone box with a gold edge shows the current value and a down arrow; click it to open the list, click an option to pick it, click the box again or anywhere outside to close. Long lists scroll with up/down buttons. Saved choices are unchanged. Dropdowns replace the click-to-cycle view switchers on every tab, Letter, Bus, Grid step, Box width, Submission Check target and Resource Monitor graph set, plus the Edit settings rows.
+
 ## RS Dev Tools 0.2.12 (2026-10-23)
 - Commands tab: removed the Source / verified column and the source text from tooltips. Columns are now Command, Syntax / args and Description; tooltips show the full syntax and description. Risky commands still need a Confirm click.
 

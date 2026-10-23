@@ -32,7 +32,7 @@
 local PLUGIN_NAME = "RS Dev Tools"
 local SLUG = "rs-dev-tools"
 local helpers = require("ui_helpers")
-helpers.VERSION = "0.2.12"
+helpers.VERSION = "0.2.13"
 local H = helpers
 local Table = require("dt_table")
 local FaqDialog = require("faq_dialog")
@@ -2233,17 +2233,22 @@ local function rect(parent, r, g, b, a)
     pcall(function() c = ui.Rectangle.new(parent); c.fill = true; c.colour = Vector4.new(r, g, b, a) end)
     return c
 end
+-- 0.2.13: option pickers are RuneScape-style dropdowns (helpers.dropdown).
+-- options: list or function returning a list of labels; get/set use indexes.
+local function ddCtrl(tab, w, options, get, set, show, name, tip, onChange)
+    local d = helpers.dropdown(root, 0, 0, w, H.BTN_H, { options = options, get = get, set = set, name = name, tip = tip,
+        onChange = function() if onChange then onChange() end; refresh() end })
+    ctrls[tab] = ctrls[tab] or {}
+    ctrls[tab][#ctrls[tab] + 1] = { c = d, w = w, show = show }
+    R(name or "dropdown", "Dropdown", d.box)
+    return d
+end
 local function cycleBtn(tab, labels, get, set, w)
-    local b
-    local function label() for i, l in ipairs(labels) do if l[1] == get() then return l[2], i end end; return labels[1][2], 1 end
     local names = {}
     for _, l in ipairs(labels) do names[#names + 1] = l[2] end
-    b = btn(tab, label(), w, function()
-        local _, i = label()
-        set(labels[i % #labels + 1][1]); setLabel(b, (label())); tbl.page = 1; tbl.selected = nil; refresh()
-    end, nil, "__cycle")
-    helpers.setTip(b, "Switch view. Click to cycle: " .. table.concat(names, ", ") .. ".")
-    return b
+    local function idx() for i, l in ipairs(labels) do if l[1] == get() then return i end end; return 1 end
+    return ddCtrl(tab, w + 18, names, idx, function(i) set(labels[i][1]) end, nil, "view " .. tab,
+        "Switch view: " .. table.concat(names, ", ") .. ".", function() tbl.page = 1; tbl.selected = nil end)
 end
 
 local function buildPanel(w)
@@ -2290,10 +2295,9 @@ local function buildPanel(w)
     -- 4 Sprite Browser
     cycleBtn(T_BROWSE, { { "sprite", "Sprites" }, { "item", "Items" }, { "cursor", "Cursors" } },
         function() return state.set end, function(v) state.set = v; save(); sel[T_BROWSE] = nil; br.lastN = -1 end, 72)
-    brLetter = btn(T_BROWSE, "Letter: All", 90, function()
-        br.letter = br.letter % #LETTERS + 1
-        setLabel(brLetter, "Letter: " .. LETTERS[br.letter]); brFilter(); tbl:go(1); refresh()
-    end)
+    brLetter = ddCtrl(T_BROWSE, 100, function() local L = {}; for i, l in ipairs(LETTERS) do L[i] = "Letter: " .. l end; return L end,
+        function() return br.letter end, function(i) br.letter = i end, nil, "letter",
+        ctrlTip("Letter"), function() brFilter(); tbl:go(1) end)
     brSearch = field(T_BROWSE, 160, "Search name or id", "browser search")
     brIdField = field(T_BROWSE, 80, "Go to ID", "id jump")
     btn(T_BROWSE, "Go", 36, function() brGoId(helpers.cleanInt(readField(brIdField, 8), 0, 9999999) or 0); refresh() end)
@@ -2314,17 +2318,13 @@ local function buildPanel(w)
         local okBus = false
         for _, b in ipairs(buses) do if b == state.bus then okBus = true end end
         if not okBus then state.bus = "MASTER" end
-        volBtn = btn(T_AUDIO, "Bus: " .. state.bus, 132, function()
-            local L = CATG.busList()
-            if #L == 0 then return end
-            local k = 1
-            for i, b in ipairs(L) do if b == state.bus then k = i end end
-            state.bus = L[k % #L + 1]; save()
-            setLabel(volBtn, "Bus: " .. state.bus); refresh()
-        end, function() return snd.mode == "sounds" end, "__bus")
+        volBtn = ddCtrl(T_AUDIO, 150, function() local L = {}; for i, b in ipairs(CATG.busList()) do L[i] = "Bus: " .. b end; return L end,
+            function() for i, b in ipairs(CATG.busList()) do if b == state.bus then return i end end; return 1 end,
+            function(i) local L = CATG.busList(); if L[i] then state.bus = L[i]; save() end end,
+            function() return snd.mode == "sounds" end, "__bus")
         helpers.setTip(volBtn, function()
             return (CATG.BUS_TIP[state.bus] or (state.bus .. ": a mixer sub-bus from audio.AudioBus; it may be silent if the game routes nothing from it.")) ..
-                " Click to cycle through the " .. #CATG.busList() .. " buses the API exposes. Sounds play at full volume on that bus; the game's sliders set the level."
+                " Pick one of the " .. #CATG.busList() .. " buses the API exposes. Sounds play at full volume on that bus; the game's sliders set the level."
         end)
     end
     btn(T_AUDIO, "Stop all", 68, function() sndStopAll(); refresh() end)
@@ -2334,11 +2334,9 @@ local function buildPanel(w)
     -- 7 Perf
     btn(T_PERF, "Reset", 52, function() perfReset(); refresh() end)
     -- 8 Grid
-    local stepB
-    stepB = btn(T_GRID, "Grid " .. STEPS[state.gridStep], 64, function()
-        state.gridStep = state.gridStep % #STEPS + 1; save()
-        setLabel(stepB, "Grid " .. STEPS[state.gridStep]); refresh()
-    end)
+    do local L = {}; for i, v in ipairs(STEPS) do L[i] = "Grid " .. v end
+        ddCtrl(T_GRID, 80, L, function() return state.gridStep end, function(i) state.gridStep = i; save() end, nil, "grid step",
+            "Grid spacing in interface units.") end
     preview.gridBg = R("grid area", "Rectangle", rect(root, 0.11, 0.10, 0.09, 0.94))
     preview.gv, preview.gh = {}, {}
     for i = 1, MAXV do preview.gv[i] = rect(root, 0.66, 0.64, 0.60, 0.35) end
@@ -2348,10 +2346,9 @@ local function buildPanel(w)
     -- 9 Text fit
     fitField = field(T_FIT, 180, "Text to measure", "fit text")
     loadFonts()
-    fitWBtn = btn(T_FIT, "Box " .. FIT_WS[state.fitW], 64, function()
-        state.fitW = state.fitW % #FIT_WS + 1; save()
-        setLabel(fitWBtn, "Box " .. FIT_WS[state.fitW]); refresh()
-    end)
+    do local L = {}; for i, v in ipairs(FIT_WS) do L[i] = "Box " .. v end
+        fitWBtn = ddCtrl(T_FIT, 80, L, function() return state.fitW end, function(i) state.fitW = i; save() end, nil, "fit width",
+            "Width of the test box in interface units.") end
     preview.fitBg = R("fit box", "Rectangle", rect(root, 0.11, 0.10, 0.09, 0.94))
     preview.fitT = R("fit text", "Text", newText(root, 100))
     -- 10 Reload
@@ -2392,23 +2389,20 @@ local function buildPanel(w)
 
     -- 16 Submission Check: target picker (this plugin, or a panel from the layer scan)
     local subB
-    subB = btn(NT.T_SUB, "Target: this plugin", 200, function()
-        local T = NT.subTargets()
-        NT.sub.target = NT.sub.target % #T + 1; NT.sub.sel = nil
-        local n = T[NT.sub.target].name
-        setLabel(subB, "Target: " .. (NT.sub.target == 1 and "this plugin" or n:gsub("^Panel: ", "")))
-        tbl.page = 1; refresh()
-    end, nil, "__subtarget")
-    helpers.setTip(subB, "Pick what to check. This plugin gets every rule; other plugins' panels (found by Rescan) only get the layer checks, because plugins cannot read each other's files. Click to cycle.")
-    btn(NT.T_SUB, "Rescan", 60, function() pcall(plugScan); NT.sub.target = 1; NT.sub.sel = nil; setLabel(subB, "Target: this plugin"); refresh() end, nil, "__subrescan")
+    subB = ddCtrl(NT.T_SUB, 200, function()
+            local L = {}
+            for i, t in ipairs(NT.subTargets()) do L[i] = "Target: " .. (i == 1 and "this plugin" or (tostring(t.name):gsub("^Panel: ", ""))) end
+            return L
+        end, function() return NT.sub.target end, function(i) NT.sub.target = i; NT.sub.sel = nil end, nil, "__subtarget",
+        "Pick what to check. This plugin gets every rule; other plugins' panels (found by Rescan) only get the layer checks, because plugins cannot read each other's files.",
+        function() tbl.page = 1 end)
+    btn(NT.T_SUB, "Rescan", 60, function() pcall(plugScan); NT.sub.target = 1; NT.sub.sel = nil; subB:refresh(); refresh() end, nil, "__subrescan")
     helpers.setTip(ctrls[NT.T_SUB][#ctrls[NT.T_SUB]].c, "Scan the shared plugin layer again for other plugins' panels.")
     -- 17 Resource Monitor: graph set and window length (typed seconds, 10-120)
     local setB
-    setB = btn(NT.T_RES, "Graphs: " .. NT.MON_SETS[NT.mon.set].name, 120, function()
-        NT.mon.set = NT.mon.set % #NT.MON_SETS + 1; NT.mon.drawn = nil
-        setLabel(setB, "Graphs: " .. NT.MON_SETS[NT.mon.set].name); refresh()
-    end, nil, "__resset")
-    helpers.setTip(setB, "Which two values to graph. Click to cycle: Frames (FPS, worst frame), Ticks (logic rate, server tick), Memory (Lua heap, layer components), Cost (refresh, Draw handler).")
+    do local L = {}; for i, m in ipairs(NT.MON_SETS) do L[i] = "Graphs: " .. m.name end
+    setB = ddCtrl(NT.T_RES, 136, L, function() return NT.mon.set end, function(i) NT.mon.set = i; NT.mon.drawn = nil end, nil, "__resset") end
+    helpers.setTip(setB.box, "Which two values to graph: Frames (FPS, worst frame), Ticks (logic rate, server tick), Memory (Lua heap, layer components), Cost (refresh, Draw handler).")
     NT.mon.field = field(NT.T_RES, 50, "60", "res window")
     helpers.setTip(NT.mon.field, "Graph window in seconds. Type a number from 10 to 120; it applies within a second.")
     btn(NT.T_RES, "Reset", 52, function() NT.mon.hist = {}; NT.mon.drawn = nil; refresh() end, nil, "__resreset")
