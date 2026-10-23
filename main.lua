@@ -32,7 +32,7 @@
 local PLUGIN_NAME = "RS Dev Tools"
 local SLUG = "rs-dev-tools"
 local helpers = require("ui_helpers")
-helpers.VERSION = "0.2.10"
+helpers.VERSION = "0.2.11"
 local H = helpers
 local Table = require("dt_table")
 local FaqDialog = require("faq_dialog")
@@ -1497,13 +1497,58 @@ local CMDS = {
     { "prl", { "plugin" }, "Reload a plugin (off and on again) to pick up edited Lua files", "Tutorial 1; FAQ 6" },
     { "ppr", { "plugin" }, "Set up a plugin's permissions in dev, before ppe", "FAQ 2, 3" },
     { "ppe", { "plugin", "permission" }, "Grant a permission in dev (httpAccess, chatAccess or trackingAccess), then prl", "FAQ 2, 3" },
+    { "pan", { "text" }, "List every config of a type with IDs and config names, e.g. Obj (names for !give), VarPlayer, Enum", "Docs: Developer cheats; RS Wiki Vars Project", { "TYPE (Obj, VarPlayer, Enum)" } },
+    { "commands", {}, "Same as help: list the console commands", "RS Wiki: Developer console" },
     { "displayfps", {}, "Show the FPS readout for performance tests", "FAQ 6" },
-    { "!resetsave", {}, "Dev cheat: your dev character resets to a fresh start at the next login. Logged on the server", "API docs: Developer cheats" },
-    { "!allinone", {}, "Dev cheat: unlocks a lot of account progression varplayers. Logged on the server", "API docs: Developer cheats" },
-    { "!godmode", {}, "Dev cheat: your character cannot be killed. Logged on the server", "API docs: Developer cheats" },
-    { "!tele", { "coords" }, "Dev cheat: teleport to coordinates such as 0,50,52,12,53. Logged on the server", "API docs: Developer cheats" },
+    { "!tele", { "rest" }, "Dev cheat: Teleport to a coordinate (0,50,50,32,32 or 0,50,50) or a named spot such as grandexchange. Logged on the server", "Docs: Cheat Commands", { "COORD or NAME" }, "docs only" },
+    { "!getcoord", {}, "Dev cheat: Print your current coordinate (and the source region in instances). Logged on the server", "Docs: Cheat Commands", {}, "docs only" },
+    { "!give", { "rest" }, "Dev cheat: Add an item by config name (not item ID; find names with pan Obj) to your backpack or a named inventory, e.g. logs or coins 200000000 bank. Logged on the server", "Docs: Cheat Commands", { "OBJ [COUNT] [INV]" }, "reported by Dylan" },
+    { "!objadd", { "rest" }, "Dev cheat: Drop an item by config name on the ground at your feet. Logged on the server", "Docs: Cheat Commands", { "OBJ [COUNT]" }, "docs only" },
+    { "!listinv", { "text" }, "Dev cheat: Print an inventory (e.g. bank, inv, worn) and its VarObj values to the console. Logged on the server", "Docs: Cheat Commands", { "INV" }, "docs only" },
+    { "!listlocs", { "text" }, "Dev cheat: Print nearby locs to the console (radius up to 32). Logged on the server", "Docs: Cheat Commands", { "RADIUS" }, "docs only" },
+    { "!listnpcs", { "text" }, "Dev cheat: Print nearby NPCs to the console (radius up to 32). Logged on the server", "Docs: Cheat Commands", { "RADIUS" }, "docs only" },
+    { "!listobjs", { "rest" }, "Dev cheat: Print nearby ground items, optionally filtered by ObjType. Logged on the server", "Docs: Cheat Commands", { "RADIUS [OBJ or null]" }, "docs only" },
+    { "!skillsetlevel", { "rest" }, "Dev cheat: Set a skill level (no level-up checks; follow with skilladdlevel 1). Logged on the server", "Docs: Cheat Commands", { "SKILL LEVEL" }, "docs only" },
+    { "!skilladdlevel", { "rest" }, "Dev cheat: Add levels to a skill (runs level-up checks). Logged on the server", "Docs: Cheat Commands", { "SKILL COUNT" }, "docs only" },
+    { "!skillsetxp", { "rest" }, "Dev cheat: Set a skill's XP (no level-up checks). Logged on the server", "Docs: Cheat Commands", { "SKILL XP" }, "docs only" },
+    { "!skilladdxp", { "rest" }, "Dev cheat: Add XP to a skill (runs level-up checks). Logged on the server", "Docs: Cheat Commands", { "SKILL XP" }, "docs only" },
+    { "!getvar", { "text" }, "Dev cheat: Print a VarType's value by name. Logged on the server", "Docs: Cheat Commands", { "VAR" }, "docs only" },
+    { "!setvar", { "rest" }, "Dev cheat: Set a VarType by name to a value. Logged on the server", "Docs: Cheat Commands", { "VAR VALUE" }, "docs only" },
+    { "!getvarc", { "text" }, "Dev cheat: Print a VarClient value by name (Discord: never worked). Logged on the server", "Docs: Cheat Commands", { "VARC" }, "Discord: broken" },
+    { "!setvarc", { "rest" }, "Dev cheat: Set a VarClient value by name. Logged on the server", "Docs: Cheat Commands", { "VARC VALUE" }, "docs only" },
+    { "!resetsave", {}, "Dev cheat: Flag your dev account to reset to a fresh start at next relog. Logged on the server", "Docs: Cheat Commands", {}, "docs only" },
+    { "!unresetsave", {}, "Dev cheat: Remove the reset flag set by !resetsave. Logged on the server", "Docs: Cheat Commands", {}, "docs only" },
+    { "!godmode", {}, "Dev cheat: Toggle combat invulnerability. Logged on the server", "Docs: Cheat Commands", {}, "docs only" },
+    { "!maxhp", {}, "Dev cheat: Toggle health constantly refilling to max. Logged on the server", "Docs: Cheat Commands", {}, "docs only" },
+    { "!hitall", {}, "Dev cheat: Deal 5000 damage to every NPC within 50 tiles. Logged on the server", "Docs: Cheat Commands", {}, "docs only" },
+    { "!allinone", {}, "Dev cheat: Complete all quests, tasks and more. Logged on the server", "Docs: Cheat Commands", {}, "docs only" },
+    { "!bank", {}, "Dev cheat: Open your bank directly. Logged on the server", "Docs: Cheat Commands", {}, "docs only" },
+    { "!clearworn", {}, "Dev cheat: Destroy everything you are wearing. Logged on the server", "Docs: Cheat Commands", {}, "docs only" },
+    { "!clearinv", {}, "Dev cheat: Destroy everything in your backpack. Logged on the server", "Docs: Cheat Commands", {}, "docs only" },
+    { "!coordsave", {}, "Dev cheat: Remember your current coordinate. Logged on the server", "Docs: Cheat Commands", {}, "docs only" },
+    { "!coordtele", {}, "Dev cheat: Teleport to the coordinate saved by !coordsave. Logged on the server", "Docs: Cheat Commands", {}, "docs only" },
+    { "!setgroupironman", { "text" }, "Dev cheat: Set group ironman status (FAQ: for shared bank tests). Logged on the server", "Docs: Cheat Commands", { "0 or 1" }, "docs only" },
+    { "!sethardcore", { "text" }, "Dev cheat: Set hardcore status. Logged on the server", "Docs: Cheat Commands", { "0 or 1" }, "docs only" },
+    { "!setironman", { "text" }, "Dev cheat: Set ironman status. Logged on the server", "Docs: Cheat Commands", { "0 or 1" }, "docs only" },
+    { "!archcompletetutorial", {}, "Dev cheat: Complete the Archaeology tutorial. Logged on the server", "Docs: Cheat Commands", {}, "docs only" },
+    { "!archgivemats", { "rest" }, "Dev cheat: Add a count of every Archaeology material to an inventory, e.g. 500 bank. Logged on the server", "Docs: Cheat Commands", { "COUNT INV" }, "docs only" },
+    { "!inventgivemats", {}, "Dev cheat: Fill every Invention material to max storage. Logged on the server", "Docs: Cheat Commands", {}, "docs only" },
+    { "!inventwipemats", {}, "Dev cheat: Clear all stored Invention materials. Logged on the server", "Docs: Cheat Commands", {}, "docs only" },
+    { "!inventmachinerun", {}, "Dev cheat: Run Invention machines for 1 simulated hour. Logged on the server", "Docs: Cheat Commands", {}, "docs only" },
+    { "!inventsetperks", { "rest" }, "Dev cheat: Set gizmo perks and ranks on a backpack item, e.g. 0 7 1 44 2 1. Logged on the server", "Docs: Cheat Commands", { "SLOT PERK RANK ..." }, "docs only" },
+    { "!tlihide", {}, "Dev cheat: Hide the game interface. Logged on the server", "Docs: Cheat Commands", {}, "docs only" },
+    { "!tlishow", {}, "Dev cheat: Show the game interface again. Logged on the server", "Docs: Cheat Commands", {}, "docs only" },
+    { "!pouchadd", { "rest" }, "Dev cheat: Add currency to your pouch by currency ID, e.g. 44 100000 1. Logged on the server", "Docs: Cheat Commands", { "CURRENCY COUNT [1]" }, "docs only" },
+    { "!pouchdel", { "rest" }, "Dev cheat: Remove currency from your pouch by currency ID. Logged on the server", "Docs: Cheat Commands", { "CURRENCY COUNT" }, "docs only" },
+    { "!pouchdeposit", { "rest" }, "Dev cheat: Move all of a currency from an inventory into your pouch. Logged on the server", "Docs: Cheat Commands", { "CURRENCY INV" }, "docs only" },
+    { "!pouchwithdraw", { "text" }, "Dev cheat: Move as much of a currency as fits from your pouch to your backpack. Logged on the server", "Docs: Cheat Commands", { "CURRENCY" }, "docs only" },
+    { "!pouchspace", { "text" }, "Dev cheat: Print the free pouch space for a currency. Logged on the server", "Docs: Cheat Commands", { "CURRENCY" }, "docs only" },
+    { "!pouchtotal", { "text" }, "Dev cheat: Print the pouch total for a currency. Logged on the server", "Docs: Cheat Commands", { "CURRENCY" }, "docs only" },
+    { "!testpouchadd", { "rest" }, "Dev cheat: Add the exact count only if it fits. Logged on the server", "Docs: Cheat Commands", { "CURRENCY COUNT" }, "docs only" },
+    { "!testpouchdel", { "rest" }, "Dev cheat: Remove the exact count only if you have it. Logged on the server", "Docs: Cheat Commands", { "CURRENCY COUNT" }, "docs only" },
 }
-local ARG_HINT = { plugin = "PLUGIN folder", permission = "PERMISSION", coords = "COORDS" }
+local ARG_HINT = { plugin = "PLUGIN folder", permission = "PERMISSION", coords = "COORDS", text = "VALUE", rest = "VALUES" }
+local function hintOf(c, k) return (c[5] and c[5][k]) or ARG_HINT[c[2][k]] end
 local PERMS = { httpaccess = "httpAccess", chataccess = "chatAccess", trackingaccess = "trackingAccess" }
 cmd = { mode = "list", hist = {}, pending = nil, arg1 = nil, arg2 = nil, free = nil, runB = nil, sel = nil, note = nil }
 cmdFn = function() local f = rawget(_G, "ExecuteConsoleCommand"); return type(f) == "function" and f or nil end
@@ -1522,6 +1567,14 @@ local function cleanArg(kind, s)
     elseif kind == "coords" then
         t = t:gsub("[^%d,]", "")
         return t:match("^%d+,%d+,%d+,%d+,%d+$") and t or nil
+    elseif kind == "text" then
+        -- 0.2.11: one cheat token (config name, number, 0/1)
+        t = t:gsub("[^%w_,%.%-]", "")
+        return t ~= "" and t or nil
+    elseif kind == "rest" then
+        -- 0.2.11: several space-separated cheat tokens
+        t = t:gsub("[^%w_,%.%- ]", ""):gsub("%s+", " "):gsub("^ ", ""):gsub(" $", "")
+        return t ~= "" and t or nil
     end
     return nil
 end
@@ -1531,6 +1584,10 @@ local function needsConfirm(text)
     for word in string.lower(text):gmatch("%S+") do w[#w + 1] = word end
     for i, x in ipairs(w) do
         if x == "!resetsave" then return "!resetsave resets your dev character" end
+        local DANGER = { ["!clearworn"] = "it destroys everything you wear", ["!clearinv"] = "it destroys your backpack", ["!inventwipemats"] = "it wipes your Invention materials",
+            ["!hitall"] = "it hits every NPC within 50 tiles", ["!setironman"] = "it changes your account type", ["!sethardcore"] = "it changes your account type",
+            ["!setgroupironman"] = "it changes your account type", ["!pouchdel"] = "it removes currency", ["!allinone"] = "it completes all quests and tasks" }
+        if DANGER[x] then return x .. ": " .. DANGER[x] end
         if (x == "poff" or x == "prl") and w[i + 1] then
             local t = w[i + 1]:gsub("[%s_]+", "-")
             if t == SLUG or t == "rs-dev-tools" or t == "rsdevtools" then
@@ -1561,7 +1618,7 @@ cmdBuild = function()
         local raw = readField(k == 1 and cmd.arg1 or cmd.arg2, 64)
         local v = cleanArg(kind, raw)
         if kind == "plugin" and v == nil then v = SLUG end
-        if v == nil then return nil, "Argument " .. k .. " (" .. ARG_HINT[kind] .. ") is missing or not valid." end
+        if v == nil then return nil, "Argument " .. k .. " (" .. hintOf(c, k) .. ") is missing or not valid." end
         parts[#parts + 1] = v
     end
     return table.concat(parts, " "), nil
@@ -1598,23 +1655,23 @@ viewCmd = function()
         local cheat = c[1]:sub(1, 1) == "!"
         if cheat and not dividerDone then
             dividerDone = true
-            rows[#rows + 1] = { H.col(RED, "Dev cheats"), H.col(RED, "----------"), H.col(RED, "logged on the server; !resetsave asks to confirm"), H.lbl(""), divider = true }
+            rows[#rows + 1] = { H.col(RED, "Cheat (!)"), H.col(RED, "----------"), H.col(RED, "dev worlds only, logged on the server; risky ones ask to confirm"), H.col(RED, "verified?"), divider = true }
         end
         local a = {}
-        for _, k in ipairs(c[2]) do a[#a + 1] = ARG_HINT[k] end
+        for k in ipairs(c[2]) do a[#a + 1] = hintOf(c, k) end
         local desc = c[3]:gsub("^Dev cheat: ", ""):gsub("%. Logged on the server$", "")
         rows[#rows + 1] = { cheat and H.col(RED, c[1]) or H.val(c[1]), H.lbl(#a > 0 and table.concat(a, " ") or "-"), cheat and H.col(RED, desc) or H.lbl(desc),
-            H.lbl((c[4]:gsub("API docs: ", "Docs: "))), c = c,
-            tip = c[1] .. ": " .. c[3] .. ". Source: " .. c[4] .. "." }
+            c[6] and H.col(c[6] == "docs only" and H.C_WARN or (c[6] == "Discord: broken" and H.C_BAD or H.C_GOOD), "Docs, " .. c[6]) or H.lbl((c[4]:gsub("API docs: ", "Docs: "))), c = c,
+            tip = c[1] .. ": " .. c[3] .. ". Source: " .. c[4] .. (c[6] and (". Status: " .. c[6] .. " (not yet tested by RS Dev Tools in the beta client; Discord Oct 19 said dev-world cheats were not working as intended)") or "") .. "." }
     end
-    return { cols = { { title = "Command", w = 84 }, { title = "Args", w = 96 }, { title = "Description", flex = 1, min = 120 }, { title = "Source", w = 72, tip = "Where the command is documented. Hover a row for the full source." } }, data = arr(rows),
+    return { cols = { { title = "Command", w = 84 }, { title = "Args", w = 96 }, { title = "Description", flex = 1, min = 120 }, { title = "Source / verified", w = 110, tip = "Where the command is documented and whether it is confirmed working in the beta client. Hover a row for details." } }, data = arr(rows),
         onRow = function(i) if rows[i].divider then return end; cmd.sel = rows[i].c; sel[T_CMD] = rows[i].c; tbl.selected = i; cmd.pending = nil; cmd.note = nil end,
         detail = function()
             local text, err = cmdBuild()
             local x = {}
             if cmd.sel then
                 local a = {}
-                for k, kind in ipairs(cmd.sel[2]) do a[#a + 1] = "box " .. k .. ": " .. ARG_HINT[kind] .. (kind == "plugin" and (" (empty = " .. SLUG .. ")") or "") end
+                for k, kind in ipairs(cmd.sel[2]) do a[#a + 1] = "box " .. k .. ": " .. hintOf(cmd.sel, k) .. (kind == "plugin" and (" (empty = " .. SLUG .. ")") or "") end
                 x[#x + 1] = H.gold(cmd.sel[1]) .. H.lbl(#a > 0 and ("  - type " .. table.concat(a, ", ")) or "  - no arguments")
                 x[#x + 1] = text and (H.lbl("Will run: ") .. H.val(text)) or H.col(H.C_WARN, err)
             else
