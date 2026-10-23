@@ -1,3 +1,9 @@
+## RS Dev Tools 0.3.0 (2026-10-23)
+- Developer harness tabs in their own module files: Event Payloads (all 43 events with counts, per second, subscribed by and a payload viewer; chat text hidden), Camera & World readouts, Component Tree, Profiler (timed API calls, layout and frame cost), Shapes & Canvas playground, PersistentDB browser/editor for this plugin's own data (Delete and Clear all need Confirm), Permissions status, and API Coverage (every documented entry and event, used or not, plus a live client check).
+- Commands tab: per-argument controls (ID and fixed-value arguments are dropdowns shown as 'ID - Name', counts/levels/XP are number boxes with - and +), a More info view explaining every argument in order (type, required or optional, default, meaning, valid values, example; unconfirmed items are labelled) with paged value lists (item and var names read from this client) that insert a value on click, and a Back button.
+- !pouchadd hint is now CURRENCY COUNT 0|1.
+- All tables: adjustable columns via the shared helpers.columns (drag a header border, or < > buttons in Settings), saved per table, Reset widths.
+
 ## RS Dev Tools 0.2.14 (2026-10-23)
 - World Render tab (Inspect): client-side position and path debug markers, ported from Rotten Potato. Ring around your position (radius 200 to 3200 units plus a half-tile ring), path trail (last 60 points while moving) and sky beam, drawn with ShapeList.DrawLine. Colour and radius dropdowns and an All off button. Everything is off on load, is not saved, and is turned off when the plugin unloads. Nothing is sent to the game. Adds edition.lua (public build: unlimited = false).
 

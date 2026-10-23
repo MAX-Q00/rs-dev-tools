@@ -1792,4 +1792,124 @@ end)
 --- Standard footer clearance below the last row of every panel.
 helpers.FOOTER_PAD = 8
 
+--[[ Adjustable table columns (shared, 2026-10-23).
+  local cw = helpers.columns("list", { id = { w = 44, min = 28 } }, relayout)
+  cw:get("id")                       -> current width (saved, clamped)
+  cw:handle(parent, "id", dir, tip)  -> header border handle; dir = +1 when
+      the border is the column's right edge (drag right = wider), -1 when it
+      is the left edge (right-anchored columns). h:place(x, y, hgt, px, py)
+      puts it on the border (x is the border line); h:setHidden(b).
+  helpers.cellText(textComp, str, w) -> truncates with "..." and sets the
+      full text as tooltip when it does not fit.
+  Drag mode: press on the border and move the mouse (manual drag: the Mouse
+  API has no button state, so the drag ends on release or when the button
+  stops being reported held). Buttons mode (Settings > Column resize):
+  small < > buttons on the border instead. Widths are saved per table in
+  PersistentDB "colWidths"; Settings > Column widths > Reset clears them. ]]
+local colStore = nil
+local function colLoad()
+    if colStore == nil then
+        local ok, st = pcall(function() return PersistentDB:GetStructuredData("colWidths") end)
+        colStore = (ok and type(st) == "table") and st or {}
+    end
+    return colStore
+end
+local function colSave() pcall(function() PersistentDB:SetStructuredData("colWidths", colLoad()) end) end
+local colTables, colDrag = {}, nil
+helpers.COL_STEP = 8
+function helpers.columns(tableId, defs, onChange)
+    local cw = { id = tableId, defs = defs, onChange = onChange, handles = {} }
+    function cw:clamp(k, v)
+        local d = self.defs[k] or {}
+        return math.max(d.min or 24, math.min(d.max or 600, math.floor(tonumber(v) or d.w or 40)))
+    end
+    function cw:get(k)
+        local st = colLoad()[self.id]
+        local d = self.defs[k] or {}
+        return self:clamp(k, st and st[k] or d.w)
+    end
+    function cw:set(k, v, noSave)
+        v = self:clamp(k, v)
+        if v == self:get(k) then return end
+        local st = colLoad(); st[self.id] = st[self.id] or {}; st[self.id][k] = v
+        if not noSave then colSave() end
+        if self.onChange then pcall(self.onChange) end
+    end
+    function cw:stored(k) local st = colLoad()[self.id]; return st ~= nil and st[k] ~= nil end
+    function cw:reset()
+        colLoad()[self.id] = nil; colSave()
+        if self.onChange then pcall(self.onChange) end
+    end
+    function cw:handle(parent, k, dir, tip)
+        dir = dir or 1
+        local h = { k = k, dir = dir, hidden = false }
+        tip = tip or "Drag to resize this column (Settings > Column widths > Reset)."
+        pcall(function()
+            h.line = ui.Rectangle.new(parent); h.line.fill = true
+            h.line.colour = Vector4.new(0.78, 0.70, 0.52, 0.55)
+            h.grip = ui.Text.new(parent); h.grip.font = helpers.FONT; h.grip.content = ""
+            helpers.blockClicks(h.grip)
+            h.grip:Subscribe(ui.Hook.ONCLICK, "colDrag", function()
+                local mx = mousePos()
+                if mx == nil then return end
+                colDrag = { cw = cw, k = k, dir = dir, mx = mx, ow = cw:get(k), idle = 0, sc = uiScale() }
+            end)
+            h.grip:Subscribe(ui.Hook.ONHOLD, "colHold", function() if colDrag then colDrag.idle = 0 end end)
+            h.grip:Subscribe(ui.Hook.ONRELEASE, "colEnd", function() if colDrag then colDrag = nil; colSave() end end)
+        end)
+        helpers.setTip(h.grip, tip)
+        -- each button moves the border by COL_STEP in its arrow direction
+        h.less = helpers.button(parent, 0, 0, 12, 14, "<", function() cw:set(k, cw:get(k) - dir * helpers.COL_STEP) end)
+        h.more = helpers.button(parent, 0, 0, 12, 14, ">", function() cw:set(k, cw:get(k) + dir * helpers.COL_STEP) end)
+        helpers.setTip(h.less, "Move this column border left"); helpers.setTip(h.more, "Move this column border right")
+        function h:apply()
+            local btn = helpers.common.colButtons == true
+            pcall(function() self.line.hidden = self.hidden end)
+            pcall(function() self.grip.hidden = self.hidden or btn end)
+            pcall(function() self.less.hidden = self.hidden or not btn end)
+            pcall(function() self.more.hidden = self.hidden or not btn end)
+        end
+        function h:place(x, y, hgt, px, py)
+            px, py = px or 0.0, py or 0.0
+            hgt = hgt or helpers.ROW_HEIGHT
+            pcall(function() self.line:SetSize(1, hgt - 4); self.line:SetPos(math.floor(x), y + 2, px, py) end)
+            pcall(function() self.grip:SetSize(8, hgt); self.grip:SetPos(math.floor(x) - 4, y, px, py) end)
+            local by = y + (hgt - 14) // 2
+            pcall(function() self.less:SetPos(math.floor(x) - 13, by, px, py) end)
+            pcall(function() self.more:SetPos(math.floor(x) + 1, by, px, py) end)
+            self:apply()
+        end
+        function h:setHidden(b) self.hidden = b and true or false; self:apply() end
+        h:apply()
+        self.handles[#self.handles + 1] = h
+        return h
+    end
+    colTables[#colTables + 1] = cw
+    return cw
+end
+function helpers.refreshColumns()
+    for _, cw in ipairs(colTables) do for _, h in ipairs(cw.handles) do h:apply() end end
+end
+function helpers.resetColumns()
+    colStore = {}; colSave()
+    for _, cw in ipairs(colTables) do if cw.onChange then pcall(cw.onChange) end end
+end
+--- Set a cell's text truncated to w (tooltip = full text when cut).
+function helpers.cellText(t, str, w)
+    if t == nil then return end
+    str = tostring(str or "")
+    local fit = helpers.fitText(str, helpers.FONT, w)
+    pcall(function() t.content = fit end)
+    if type(helpers.tips[t]) == "function" then return end   -- plugin tip wins
+    if fit ~= str then helpers.setTip(t, visible(str)) else helpers.setTip(t, nil) end
+end
+helpers.subscribe("ui_helpers", "Logic", "uiColDrag", function()
+    local d = colDrag
+    if d == nil then return end
+    local mx = mousePos()
+    if mx ~= nil then d.cw:set(d.k, d.ow + d.dir * (mx - d.mx) / d.sc, true) end
+    d.idle = d.idle + 1
+    if d.idle > 10 then colDrag = nil; colSave() end
+end)
+
 return helpers

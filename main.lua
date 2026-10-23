@@ -32,13 +32,14 @@
 local PLUGIN_NAME = "RS Dev Tools"
 local SLUG = "rs-dev-tools"
 local helpers = require("ui_helpers")
-helpers.VERSION = "0.2.14"
+helpers.VERSION = "0.3.0"
 local H = helpers
 local Table = require("dt_table")
 local FaqDialog = require("faq_dialog")
 -- 0.2.14: edition flag. edition.lua is { unlimited = false } in the public
 -- build; release/build_unlimited.py writes true for RS Dev Tools Unlimited.
 _RDT_UNL = false
+_RDT_HOOK = {}   -- 0.3.0: module event hook (main chunk is at the 200-local limit)
 pcall(function() local e = require("edition"); _RDT_UNL = type(e) == "table" and e.unlimited == true end)
 local TIPS = {}
 pcall(function() TIPS = require("tips_data") or {} end)
@@ -149,6 +150,7 @@ local function evSummary(name, e)
     return plain(s)
 end
 local function onEvent(name, e)
+    if _RDT_HOOK.event then _RDT_HOOK.event(name, e) end
     if ev.paused then return end
     ev.counts[name] = (ev.counts[name] or 0) + 1
     ev.last[name] = ticks
@@ -232,11 +234,11 @@ CATG.CATS = {
     { name = "Help",    tabs = { T_FAQ } },
 }
 CATG.TIP = {
-    Inspect = "Look at this panel and the client: UI Inspector, Event Monitor, Perf Meter, Resource Monitor (live graphs), World Render (position and path markers), Layout Grid, Text Fit.",
-    Plugins = "Plugin tools: Plugin Analyser, Submission Check, Settings, Reload Helper.",
+    Inspect = "Look at this panel and the client: UI Inspector, Event Monitor, Perf Meter, Resource Monitor (live graphs), World Render (position and path markers), Layout Grid, Text Fit, Event Payloads, Camera & World, Component Tree, Profiler.",
+    Plugins = "Plugin tools: Plugin Analyser, Submission Check, Settings, Reload Helper, PersistentDB, Permissions.",
     Assets = "Game assets: Sprite Browser (sprites, items, cursors) and Audio.",
-    Debug = "Diagnostics, Error Log, API Explorer and console Commands.",
-    Help = "Help and FAQ from the plugin developer Discord.",
+    Debug = "Diagnostics, Error Log, API Explorer, console Commands and Shapes & Canvas (Unlimited adds Automation, Visual Overrides, Deep Probe).",
+    Help = "Help, FAQ from the plugin developer Discord, and API Coverage.",
 }
 function CATG.of(t) for i, c in ipairs(CATG.CATS) do for _, x in ipairs(c.tabs) do if x == t then return i end end end; return 1 end
 CATG.catBtns = {}
@@ -1542,7 +1544,7 @@ local CMDS = {
     { "!inventsetperks", { "rest" }, "Dev cheat: Set gizmo perks and ranks on a backpack item, e.g. 0 7 1 44 2 1. Logged on the server", "Docs: Cheat Commands", { "SLOT PERK RANK ..." }, "docs only" },
     { "!tlihide", {}, "Dev cheat: Hide the game interface. Logged on the server", "Docs: Cheat Commands", {}, "docs only" },
     { "!tlishow", {}, "Dev cheat: Show the game interface again. Logged on the server", "Docs: Cheat Commands", {}, "docs only" },
-    { "!pouchadd", { "rest" }, "Dev cheat: Add currency to your pouch by currency ID, e.g. 44 100000 1. Logged on the server", "Docs: Cheat Commands", { "CURRENCY COUNT [1]" }, "docs only" },
+    { "!pouchadd", { "rest" }, "Dev cheat: Add currency to your pouch by currency ID, e.g. 44 100000 1 (last value: 1 = cap at max, 0 = add nothing on overflow). Logged on the server", "Docs: Cheat Commands", { "CURRENCY COUNT 0|1" }, "docs only" },
     { "!pouchdel", { "rest" }, "Dev cheat: Remove currency from your pouch by currency ID. Logged on the server", "Docs: Cheat Commands", { "CURRENCY COUNT" }, "docs only" },
     { "!pouchdeposit", { "rest" }, "Dev cheat: Move all of a currency from an inventory into your pouch. Logged on the server", "Docs: Cheat Commands", { "CURRENCY INV" }, "docs only" },
     { "!pouchwithdraw", { "text" }, "Dev cheat: Move as much of a currency as fits from your pouch to your backpack. Logged on the server", "Docs: Cheat Commands", { "CURRENCY" }, "docs only" },
@@ -1614,9 +1616,97 @@ cmdRun = function(text, confirmed)
     if not ok then logError("ExecuteConsoleCommand", tostring(err)) end
     cmd.note = ok and ("Sent: " .. text) or ("Error: " .. untag(tostring(err)))
 end
+NT.cmdRun, NT.needsConfirm, NT.cmdFn, NT.cmd = cmdRun, needsConfirm, cmdFn, cmd
+-- 0.3.0 per-argument controls for cheat commands with argument data
+-- (rdt_cmd_args.lua): ID and fixed-value arguments get a dropdown shown as
+-- "ID - Name"; counts, levels, XP and slots get a number box with - and +;
+-- words get a text box (plus a dropdown when a partial list is known).
+cmd.tokv, cmd.slots = {}, {}
+cmd.info = function(c)
+    if c == nil then return nil end
+    if cmd.args == nil then local ok, d = pcall(require, "rdt_cmd_args"); cmd.args = (ok and type(d) == "table") and d or {} end
+    return cmd.args[c[1]]
+end
+cmd.pool = function(c) local i = cmd.info(c); return i ~= nil and c[1]:sub(1, 1) == "!" and #i.args > 0 and #i.args <= 6 end
+cmd.valsOf = function(c, pos)
+    if cmd.vals == nil then local ok, d = pcall(require, "rdt_cmd_vals"); cmd.vals = (ok and type(d) == "table") and d or {} end
+    return cmd.vals[c[1] .. "#" .. pos] or {}
+end
+-- item and var names are filled from the plugin API when first opened
+-- (read only): id.Obj config names (fallback: the Item browser scan),
+-- id.VarPlayer / id.VarBit, or id.VarClient.
+cmd.liveCache = {}
+cmd.live = function(a)
+    local key = a.runtime .. (a.type:find("VarClient") and "c" or "")
+    if cmd.liveCache[key] then return cmd.liveCache[key] end
+    local out = {}
+    local function from(t, note)
+        pcall(function() for k, v in pairs(t) do if type(k) == "string" and type(v) == "number" then out[#out + 1] = { k, note .. " " .. v } end end end)
+    end
+    if a.runtime == "items" then
+        from(rawget(_G, "id") and id.Obj or {}, "item")
+        if #out == 0 then for _, e in ipairs(lists.item.items) do out[#out + 1] = { tostring(e.raw or e.name), "item " .. tostring(e.id) } end end
+    elseif key == "varsc" then from(rawget(_G, "id") and id.VarClient or {}, "varclient")
+    else from(rawget(_G, "id") and id.VarPlayer or {}, "varp"); from(rawget(_G, "id") and id.VarBit or {}, "varbit") end
+    table.sort(out, function(x, y) return x[1] < y[1] end)
+    if #out > 0 then cmd.liveCache[key] = out end
+    return out
+end
+cmd.label = function(v)
+    local n = v[2] or ""
+    if n == "" then return v[1] end
+    n = n:gsub("^%l", string.upper)
+    if v[1]:match("^%-?%d+$") then return v[1] .. " - " .. n end
+    return v[1] .. "  (" .. n .. ")"
+end
+-- slot kinds: "dd" = dropdown only, "ddtext" = dropdown + text box,
+-- "num" = number box with - +, "text" = text box
+cmd.kind = function(c, pos)
+    local i = cmd.info(c); local a = i and i.args[pos]
+    if a == nil then return nil end
+    local nm, ty = a.name:lower(), a.type:lower()
+    if (a.nvals or 0) > 0 and not a.runtime then
+        if a.complete then return "dd" end
+        return "ddtext"
+    end
+    if ty:find("integer") and not ty:find("string") then return "num" end
+    if nm:find("count") or nm:find("amount") or nm:find("level") or nm:find("xp") or nm:find("radius") or nm:find("slot") then return "num" end
+    return "text"
+end
+cmd.setTok = function(pos, v)
+    local sl = cmd.slots[pos]
+    local k = cmd.kind(cmd.sel, pos)
+    if sl and (k == "num" or k == "text" or k == "ddtext") then pcall(function() sl.f.content = v end) end
+    cmd.tokv[pos] = v
+    if sl and sl.dd then pcall(function() sl.dd:refresh() end) end
+end
+cmd.clearToks = function()
+    cmd.tokv = {}
+    for _, sl in ipairs(cmd.slots) do pcall(function() sl.f.content = "" end); if sl.dd then pcall(function() sl.dd:refresh() end) end end
+end
 cmdBuild = function()
     local c = cmd.sel
     if c == nil then return nil, "Pick a command in the table." end
+    if cmd.pool(c) then
+        local info = cmd.info(c)
+        local parts, gap = { c[1] }, nil
+        for pos, a in ipairs(info.args) do
+            local k = cmd.kind(c, pos)
+            local v = cmd.tokv[pos]
+            local sl = cmd.slots[pos]
+            if k ~= "dd" and sl then v = readField(sl.f, 80) end
+            v = tostring(v or ""):gsub("[^%w_%-%.,:]", "")
+            if v == "" and a.default ~= "" and not a.required then v = nil end
+            if v == "" or v == nil then
+                if a.required then return nil, "Argument " .. pos .. " (" .. a.name .. ") is missing." end
+                gap = gap or pos
+            else
+                if gap then return nil, "Argument " .. gap .. " (" .. info.args[gap].name .. ") must be set before argument " .. pos .. "." end
+                parts[#parts + 1] = v
+            end
+        end
+        return table.concat(parts, " "), nil
+    end
     local parts = { c[1] }
     for k, kind in ipairs(c[2]) do
         local raw = readField(k == 1 and cmd.arg1 or cmd.arg2, 64)
@@ -1652,6 +1742,81 @@ viewCmd = function()
                 return { lines = lines({ H.lbl(#cmd.hist .. " commands run this session. Plugins cannot read console output.") }), copy = h and h.c or nil }
             end }
     end
+    -- 0.3.0 More info: every argument of the picked command, in order
+    -- (data in rdt_cmd_args.lua, generated by release/gen_cmd_args.py).
+    if cmd.more and cmd.sel and cmd.mode == "list" then
+        if cmd.args == nil then local ok, d = pcall(require, "rdt_cmd_args"); cmd.args = (ok and type(d) == "table") and d or {} end
+        local c = cmd.sel
+        local info = cmd.args[c[1]]
+        local va = cmd.valArg and info and info.args[cmd.valArg]
+        if va then
+            -- every allowed value of one argument (paged); click inserts it
+            if cmd.vals == nil then local ok, d = pcall(require, "rdt_cmd_vals"); cmd.vals = (ok and type(d) == "table") and d or {} end
+            local pos = cmd.valArg
+            local list = va.runtime and cmd.live(va) or cmd.valsOf(c, pos)
+            local q = readField(cmd.valF, 40):lower()
+            if q ~= "" then
+                local key = tostring(list) .. "|" .. q
+                if cmd.fKey ~= key then
+                    local out = {}
+                    for _, v in ipairs(list) do if v[1]:lower():find(q, 1, true) or v[2]:lower():find(q, 1, true) then out[#out + 1] = v end end
+                    cmd.fKey, cmd.fList = key, out
+                end
+                list = cmd.fList
+            end
+            return { key = "vals", cols = { { title = "Value", flex = 2, min = 100 }, { title = "Meaning", flex = 3, min = 100 } },
+                data = { count = #list, get = function(i) local v = list[i]; return { H.val(cmd.label(v)), H.lbl(v[2] ~= "" and v[2] or "-"), tip = "Click to put " .. v[1] .. " into the argument box." } end },
+                onRow = function(i)
+                    local v = list[i] and list[i][1]
+                    if v == nil then return end
+                    if cmd.pool(c) then cmd.setTok(pos, v)
+                    elseif #c[2] == 1 and c[2][1] == "rest" then
+                        local toks = {}
+                        for t in readField(cmd.arg1, 200):gmatch("%S+") do toks[#toks + 1] = t end
+                        for k = #toks + 1, pos - 1 do toks[k] = (info.args[k].default ~= "" and info.args[k].default) or info.args[k].name:upper() end
+                        toks[pos] = v
+                        pcall(function() cmd.arg1.content = table.concat(toks, " ") end)
+                    else
+                        local box = pos == 1 and cmd.arg1 or cmd.arg2
+                        pcall(function() box.content = v end)
+                    end
+                    cmd.note = "Put " .. v .. " in as argument " .. pos .. " (" .. va.name .. ")."
+                end,
+                detail = function()
+                    local L = { H.gold(c[1]) .. H.lbl("  argument " .. pos .. ": ") .. H.val(va.name),
+                        H.lbl(#list .. " values" .. (q ~= "" and (" matching " .. q) or "") .. (va.runtime and ", read from this client" or "") .. ", ") .. (va.complete and H.col(H.C_GOOD, "complete list") or H.col(H.C_WARN, "partial list")),
+                        H.lbl("Click a value to put it in the argument box. Use the pager for more. Back returns to the arguments.") }
+                    if cmd.note then L[#L + 1] = H.lbl(cmd.note) end
+                    return { lines = L }
+                end }
+        end
+        local rows = {}
+        for k, a in ipairs(info and info.args or {}) do
+            local un = not a.confirmed
+            local mean = (a.meaning ~= "" and a.meaning or "unconfirmed") .. (un and " (unconfirmed)" or "")
+            rows[#rows + 1] = { H.lbl(tostring(k)), H.val(a.name), H.lbl(a.type), a.required and H.lbl("required") or H.lbl("optional"),
+                H.lbl(a.default ~= "" and a.default or "-"), un and H.col(H.C_WARN, mean) or H.lbl(mean), H.lbl(a.values ~= "" and a.values or "-"),
+                a.runtime and H.gold("live >") or ((a.nvals or 0) > 0 and H.gold(a.nvals .. (a.complete and " >" or " partial >")) or H.lbl("-")),
+                tip = a.name .. ": " .. mean .. (a.values ~= "" and (" Valid: " .. a.values) or "") .. ((((a.nvals or 0) > 0) or a.runtime) and " Click to see every value." or "") }
+        end
+        if info == nil then
+            for k in ipairs(c[2]) do rows[#rows + 1] = { H.lbl(tostring(k)), H.val(hintOf(c, k)), H.lbl("unconfirmed"), H.lbl("unconfirmed"), H.lbl("-"), H.col(H.C_WARN, "unconfirmed"), H.lbl("-"), H.lbl("-") } end
+        end
+        return { key = "args", cols = { { title = "#", w = 24 }, { title = "Argument", w = 96 }, { title = "Type", w = 80 }, { title = "Req", w = 60 },
+                { title = "Default", w = 60 }, { title = "What it does", flex = 3, min = 120 }, { title = "Valid values", flex = 2, min = 80 }, { title = "List", w = 64 } },
+            data = arr(rows),
+            onRow = function(i) local a = info and info.args[i]; if a and ((a.nvals or 0) > 0 or a.runtime) then cmd.valArg = i; cmd.note = nil; tbl.page = 1; tbl.selected = nil end end,
+            detail = function()
+                local desc = c[3]:gsub("^Dev cheat: ", ""):gsub("%. Logged on the server$", "")
+                local L = { H.gold(c[1]) .. H.lbl("  " .. desc) }
+                L[#L + 1] = H.lbl("Syntax: ") .. H.val(info and info.syntax or c[1])
+                if info and info.example ~= "" then L[#L + 1] = H.lbl("Example: ") .. H.val(info.example) end
+                if #rows == 0 then L[#L + 1] = H.lbl("This command takes no arguments.") end
+                if info and info.notes ~= "" then L[#L + 1] = H.lbl(info.notes) end
+                L[#L + 1] = H.lbl("Click an argument with a List value to see every allowed value. Back returns to the command list.")
+                return { lines = L, copy = info and info.example and info.example:match("^[^|]+"):gsub("%s+$", "") or c[1] }
+            end }
+    end
     local rows = {}
     local RED = "E04A3A"
     local dividerDone = false
@@ -1670,7 +1835,7 @@ viewCmd = function()
 
     end
     return { cols = { { title = "Command", w = 84 }, { title = "Syntax / args", w = 150 }, { title = "Description", flex = 1, min = 120 } }, data = arr(rows),
-        onRow = function(i) if rows[i].divider then return end; cmd.sel = rows[i].c; sel[T_CMD] = rows[i].c; tbl.selected = i; cmd.pending = nil; cmd.note = nil end,
+        onRow = function(i) if rows[i].divider then return end; if cmd.sel ~= rows[i].c then cmd.clearToks() end; cmd.sel = rows[i].c; sel[T_CMD] = rows[i].c; tbl.selected = i; cmd.pending = nil; cmd.note = nil end,
         detail = function()
             local text, err = cmdBuild()
             local x = {}
@@ -2206,8 +2371,32 @@ end
 
 end
 
+-------------------------------------------------------------------------------
+-- 0.3.0: tabs that live in their own module files (rdt_mods.lua lists them).
+-- Each module returns { name, cat, view, build(ui), tick, shutdown, onEvent }.
+-------------------------------------------------------------------------------
+NT.ctx = { H = H, helpers = helpers, arr = arr, kv = kv, commas = commas, fmt = fmt, plain = plain, untag = untag,
+    secs = secs, unl = _RDT_UNL, PLUGIN_NAME = PLUGIN_NAME, SLUG = SLUG, logError = logError, perf = perf,
+    readField = readField, refresh = function() refresh() end, root = function() return root end,
+    cmdRun = function(t, c) NT.cmdRun(t, c) end, needsConfirm = function(t) return NT.needsConfirm(t) end,
+    cmdFn = function() return NT.cmdFn() end, cmd = NT.cmd, ticks = function() return ticks end,
+    reg = reg, tbl = function() return tbl end, VERSION = H.VERSION, EVENTS = EVENTS, ev = ev }
+NT.mods = {}
+pcall(function()
+    local list = require("rdt_mods")
+    for _, m in ipairs(list(NT.ctx)) do
+        if type(m) == "table" and m.name and m.view then
+            TABS[#TABS + 1] = m.name
+            m.tab = #TABS
+            NT.mods[#NT.mods + 1] = m
+            for _, c in ipairs(CATG.CATS) do if c.name == (m.cat or "Debug") then c.tabs[#c.tabs + 1] = m.tab end end
+        end
+    end
+end)
+_RDT_HOOK.event = function(name, e) for _, m in ipairs(NT.mods) do if m.onEvent then pcall(m.onEvent, name, e) end end end
 local VIEWS = { viewUI, viewPlug, viewEvents, viewBrowse, viewAudio, viewSettings, viewPerf, viewGrid, viewFit, viewReload, viewFaq,
     viewDiag, viewErrors, viewApi, viewCmd, NT.viewSub, NT.viewRes, NT.viewWorld, NT.viewProbe }
+for _, m in ipairs(NT.mods) do VIEWS[m.tab] = function() return m.view(state.tab == m.tab) end end
 local JUMPS = {}   -- 0.2.6: every tab gets the full pager
 
 -------------------------------------------------------------------------------
@@ -2257,6 +2446,7 @@ layout = function()
             local show = t == state.tab and (it.show == nil or it.show())
             helpers.setHidden({ it.c }, not show)
             if show then vis[#vis + 1] = it end
+            if show and t == T_CMD and type(it.c) == "table" and rawget(it.c, "refresh") then pcall(it.c.refresh, it.c) end
         end
     end
     if #vis > 0 then y = flow(vis, y, 6) end
@@ -2277,6 +2467,7 @@ layout = function()
         end
         v.data.tipped = true
     end
+    tbl.keyPrefix = TABS[state.tab] .. (v.key and ("/" .. v.key) or "")
     tbl:setColumns(v.cols, v.data, v.onRow, v.icon)
     tbl.emptyMsg = v.empty or "Nothing to show"
     local d = nil
@@ -2370,6 +2561,7 @@ end
 
 local function selectTab(i)
     pages[state.tab] = tbl.page
+    cmd.more, cmd.valArg = false, nil   -- 0.3.0: Commands More info resets on tab switch
     state.tab = i; save()
     tbl.page = pages[i] or 1
     tbl.selected = nil
@@ -2519,10 +2711,54 @@ local function buildPanel(w)
     btn(T_API, "Reread", 60, function() api.rows = nil; refresh() end, function() return api.mode == "members" end)
 
     -- Commands
-    local function selArgs(n) return function() return cmd.mode == "list" and cmd.sel ~= nil and #cmd.sel[2] >= n end end
-    cycleBtn(T_CMD, { { "list", "All" }, { "history", "History" } }, function() return cmd.mode end, function(v) cmd.mode = v end, 84)
+    local function selArgs(n) return function() return cmd.mode == "list" and not cmd.more and cmd.sel ~= nil and #cmd.sel[2] >= n and not cmd.pool(cmd.sel) end end
+    cycleBtn(T_CMD, { { "list", "All" }, { "history", "History" } }, function() return cmd.mode end, function(v) cmd.mode = v; cmd.more, cmd.valArg = false, nil end, 84)
     cmd.arg1 = field(T_CMD, 130, "Argument 1", "cmd arg1", selArgs(1))
     cmd.arg2 = field(T_CMD, 120, "Argument 2", "cmd arg2", selArgs(2))
+    -- 0.3.0: one control set per argument (up to 6) for cheat commands
+    for pos = 1, 6 do
+        local sl = {}
+        cmd.slots[pos] = sl
+        local function on(kinds) return function()
+            if cmd.mode ~= "list" or cmd.more or not cmd.pool(cmd.sel) then return false end
+            local k = cmd.kind(cmd.sel, pos)
+            return k ~= nil and kinds[k] == true
+        end end
+        local function argName() local i = cmd.info(cmd.sel); local a = i and i.args[pos]; return a and a.name or ("argument " .. pos) end
+        sl.dd = ddCtrl(T_CMD, 150, function()
+                local L = { "Arg " .. pos .. ": pick " .. argName() }
+                if cmd.sel then for _, v in ipairs(cmd.valsOf(cmd.sel, pos)) do L[#L + 1] = cmd.label(v) end end
+                return L
+            end, function()
+                local vals = cmd.sel and cmd.valsOf(cmd.sel, pos) or {}
+                local cur = cmd.tokv[pos]
+                for j, v in ipairs(vals) do if v[1] == cur then return j + 1 end end
+                return 1
+            end, function(i)
+                local v = cmd.sel and cmd.valsOf(cmd.sel, pos)[i - 1]
+                cmd.tokv[pos] = v and v[1] or nil
+                if cmd.kind(cmd.sel, pos) == "ddtext" then pcall(function() sl.f.content = v and v[1] or "" end) end
+            end, on({ dd = true, ddtext = true }), "cmd dd " .. pos,
+            "Pick a value for this argument; the number or word goes into the command.")
+        sl.f = field(T_CMD, 96, "Argument " .. pos, "cmd slot " .. pos, on({ num = true, text = true, ddtext = true }))
+        helpers.setTip(sl.f, function()
+            local i = cmd.info(cmd.sel); local a = i and i.args[pos]
+            if a == nil then return nil end
+            return "Argument " .. pos .. ": " .. a.name .. " (" .. a.type .. (a.required and ", required" or ", optional") .. (a.default ~= "" and (", default " .. a.default) or "") .. "). " .. a.meaning
+        end)
+        local function bump(d)
+            local n = tonumber(readField(sl.f, 20)) or 0
+            n = math.max(0, math.floor(n + d))
+            pcall(function() sl.f.content = tostring(n) end)
+            refresh()
+        end
+        local mb = btn(T_CMD, "-", 20, function() bump(-1) end, on({ num = true }), "__cmdminus" .. pos)
+        helpers.setTip(mb, "One less.")
+        local pb = btn(T_CMD, "+", 20, function() bump(1) end, on({ num = true }), "__cmdplus" .. pos)
+        helpers.setTip(pb, "One more.")
+    end
+    cmd.valF = field(T_CMD, 120, "Filter values", "cmd valfilter", function() return cmd.more == true and cmd.valArg ~= nil end)
+    helpers.setTip(cmd.valF, "Type part of a value or name to narrow the list.")
     cmd.runB = btn(T_CMD, cmdFn() and "Run" or "Run (unavailable)", cmdFn() and 44 or 120, function()
         if cmdFn() == nil then cmd.note = "ExecuteConsoleCommand is not available in this client; Run is disabled."; refresh(); return end
         local text, err = cmdBuild()
@@ -2537,6 +2773,11 @@ local function buildPanel(w)
     btn(T_CMD, "Confirm", 64, function() if cmd.pending then cmdRun(cmd.pending, true) end; refresh() end, function() return cmd.pending ~= nil end)
     btn(T_CMD, "Cancel", 56, function() cmd.pending = nil; cmd.note = "Cancelled."; refresh() end, function() return cmd.pending ~= nil end)
     btn(T_CMD, "Clear", 52, function() cmd.hist = {}; sel[T_CMD] = nil; refresh() end, function() return cmd.mode == "history" end)
+    do local b = btn(T_CMD, "More info", 70, function() cmd.more = true; cmd.valArg = nil; tbl.page = 1; tbl.selected = nil; refresh() end,
+            function() return cmd.mode == "list" and cmd.sel ~= nil and not cmd.more end, "__cmdmore")
+        helpers.setTip(b, "Explain every argument of the picked command: order, type, required or optional, default, meaning, valid values and an example.")
+        b = btn(T_CMD, "Back", 48, function() if cmd.valArg then cmd.valArg = nil else cmd.more = false end; tbl.page = 1; tbl.selected = nil; refresh() end, function() return cmd.more == true end, "__cmdback")
+        helpers.setTip(b, "Back to the command list.") end
 
     -- 16 Submission Check: target picker (this plugin, or a panel from the layer scan)
     local subB
@@ -2645,6 +2886,26 @@ local function buildPanel(w)
 
     tbl = Table.new(root, R)
     tbl.afterRow = function() refresh() end
+    -- 0.3.0: adjustable columns use the shared helpers.columns (widths in
+    -- PersistentDB "colWidths"); Settings picks drag or < > buttons.
+    helpers.common.colButtons = state.colBtn == true
+    ddCtrl(T_SET, 130, { "Columns: drag", "Columns: < > buttons" }, function() return state.colBtn and 2 or 1 end,
+        function(i) state.colBtn = i == 2; helpers.common.colButtons = state.colBtn; save(); pcall(helpers.refreshColumns) end, nil, "column resize",
+        "Column resize: drag a header border, or show small < > buttons on each border.")
+    do local b = btn(T_SET, "Reset all widths", 104, function() pcall(helpers.resetColumns); refresh() end, nil, "__colreset")
+        helpers.setTip(b, "Put every column in every table back to its default width.") end
+    tbl.onResize = function() refresh() end
+    for _, m in ipairs(NT.mods) do
+        if m.build then
+            local tab = m.tab
+            local okb, errb = pcall(m.build, {
+                btn = function(label, w, fn, show, tip) local b = btn(tab, label, w, fn, show, "__m" .. label); if tip then helpers.setTip(b, tip) end; return b end,
+                field = function(w, ph, name, show, tip) local f = field(tab, w, ph, name, show); if tip then helpers.setTip(f, tip) end; return f end,
+                dd = function(w, opts, get, set, show, name, tip, onChange) return ddCtrl(tab, w, opts, get, set, show, name, tip, onChange) end,
+            })
+            if not okb then logError("build " .. m.name, tostring(errb)) end
+        end
+    end
 
     local items = helpers.commonItems(function() refresh() end)
     settingsUI = helpers.newSettings(root, items, 6)
@@ -2680,6 +2941,8 @@ helpers.subscribe(PLUGIN_NAME, "Logic", "rdtLogic", function()
         lastW = w
     end
     if ticks % 500 == 0 then pcall(leakCheck) end
+    pcall(Table.tick)
+    for _, m in ipairs(NT.mods) do if m.tick then local okt, et = pcall(m.tick, state.tab == m.tab, ticks); if not okt then logError("tick " .. m.name, tostring(et)) end end end
     -- 0.2.7 Resource Monitor: one sample a second, always (cheap), so the
     -- graph has history when the tab is opened
     if ticks % 50 == 0 then
@@ -2730,6 +2993,7 @@ helpers.log("[" .. PLUGIN_NAME .. "] loaded")
 
 function PluginShutdown()
     pcall(NT.WR.shutdown)
+    for _, m in ipairs(NT.mods) do if m.shutdown then pcall(m.shutdown) end end
     FaqDialog.close()
     sndStopAll()
     save()

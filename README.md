@@ -1,34 +1,24 @@
 # RS Dev Tools
 
-Tools for RuneScape plugin makers: UI and plugin layer inspector, event monitor, sprite, item and sound browsers, diagnostics, error log with stack traces, API explorer and a developer FAQ.
+One panel of tools for RuneScape plugin makers. Every list is a table (one shared helper, dt_table.lua).
 
-Current version: 0.2.10
+Tabs: UI Inspector, Plugin Analyser, Event Monitor, Sprite Browser, Audio, Settings, Perf Meter, Layout Grid, Text Fit, Reload Helper, Help/FAQ, Diagnostics, Error Log, API Explorer.
 
-- Install from mod.io: https://mod.io/g/runescape/m/rs-dev-tools
+## Permissions
+None. Display only: no input, no console commands, no settings changes. Nothing is drawn at the mouse. Browsing sounds plays on the MASTER bus; the Audio "Bus test" mode plays one sound on the bus you click so MASTER and SFX can be compared.
 
-## Submission checker
-`tools/check_submission.py` checks a plugin folder for the file, manifest, code and listing rules that the in-game Submission Check tab cannot read (plugins have no file API):
+## Analysing other plugins
+- Possible: a read-only scan of the shared plugin layer (TOPLEVEL_V2__PLUGIN_BUILD_LAYER_TOP), which every plugin panel is built on: type, position, size, shown state and visible text of each component, plus a count against the 4096 dynamic ID limit.
+- Not possible: knowing which plugin owns a panel, reading other plugins' settings (PersistentDB is isolated), files, timings or errors, or listing installed plugins.
+- Opt-in hook: a plugin can end its main.lua with `return { devInfo = function() return { key = value } end }`. Without RS Dev Tools this does nothing. RS Dev Tools only sees it if that plugin's folder name is added to its plugin.json `optionalDependencies` (e.g. `"world_event_timers": "world-event-timers"` locally; mod.io ID for submission). None are listed in 0.2.0: whether a dependency's main.lua runs a second time when loaded as a dependency is untested, so test with one plugin first.
 
-```
-python tools/check_submission.py path/to/your-plugin --listing path/to/listing-folder --zip your-plugin-1.0.0.zip
-```
+## Help/FAQ and Diagnostics
+faq_data.lua is generated from the plugin developer Discord research by `release/build_faq.py`. Do not edit it by hand. `release/validate_plugin_json.py <folder>` checks manifests (trailing commas, contact email, requiredPermissions, dependency IDs, resource sizes), because plugins cannot read plugin.json at runtime.
 
-It prints PASS, WARN, FAIL or MANUAL for each rule and exits 1 on any FAIL.
+## First load
+Open the console (Alt and backtick), then `prf` and `pon rs-dev-tools`. After edits: `prl rs-dev-tools`.
 
-## Report a bug or request a feature
-
-Open an issue: https://github.com/MAX-Q00/rs-dev-tools/issues/new/choose
-
-For a bug, please include the plugin version, what happened, what you expected, steps to reproduce, a screenshot if you can, and your game resolution and UI scale.
-
-Contact: Dylan@quspace.agency
-
-## EULA
-
-This Plugin uses software licensed by Jagex to the developer under the terms of the Jagex End User Licence Agreement (EULA) found at https://legal.jagex.com/docs/terms/eula (and all terms incorporated into it by reference). The development and any use of the Plugin is at all times subject to the Jagex EULA.
-
-By submitting a Plugin (as defined in Schedule 4 of the EULA), you acknowledge that you agree to the terms of the Jagex End User License Agreement (EULA) found at https://legal.jagex.com/docs/terms/eula (and all terms incorporated into it be reference) and acknowledge that such terms are legally binding on you. If you do not agree to the terms of the EULA, you must not submit a Plugin or use the Plugin functionality anyway. In such circumstances, Jagex does not licence the software to you, or grant you any of the relevant rights relating to the submission of Plugins set out in the EULA and you will not be permitted to access or use the Plugin functionality in any way whatsoever.
-
----
-
-Not affiliated with or endorsed by Jagex. RuneScape is a trademark of Jagex Ltd.
+## 0.2.1
+- Commands tab: runs documented console commands with ExecuteConsoleCommand when you click Run. No permission is needed (the documented permissions are httpAccess, chatAccess and trackingAccess only), so plugin.json still requests none and no ppe command is needed. Works only in the developer environment.
+- Help/FAQ answers open in their own window (faq_dialog.lua).
+- Tooltips come from tips_data.lua through helpers.setTip in ui_helpers.lua (shared with the ellipsis hover box).

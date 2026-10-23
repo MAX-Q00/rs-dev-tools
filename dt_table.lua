@@ -50,6 +50,17 @@ function T.new(root, register)
         local cc = c
         if H.setTip then H.setTip(self.head[c], function() return self:colTip(cc) end) end
     end
+    -- 0.3.0: adjustable columns through the shared helpers.columns (same
+    -- helper as Pinger and the other plugins): drag a header's right border,
+    -- or < > buttons when helpers.common.colButtons is on. Widths are saved
+    -- per table (tab + column titles) in PersistentDB "colWidths"; Reset
+    -- widths (next to the pager) clears the current table.
+    self.cw = H.columns("dt", {}, function() if self.onResize then pcall(self.onResize) end end)
+    self.grips = {}
+    for c = 1, T.MAXC do
+        self.grips[c] = self.cw:handle(root, c, 1, "Drag to resize this column (or use < > in Settings > Column resize). Reset widths puts every column back.")
+        pcall(function() register("table grip " .. c, "Text", self.grips[c].grip) end)
+    end
     self.div = rect(root, 0.78, 0.70, 0.52, 0.9)
     self.emptyT = text(root)   -- 0.2.6: one centred line when a table is empty
     H.safe(function() self.emptyT.hidden = true end)
@@ -80,6 +91,10 @@ function T.new(root, register)
     if H.setTip then
         H.setTip(self.prev, "Previous page."); H.setTip(self.next, "Next page.")
     end
+    self.resetW = H.button(root, 0, 0, 84, H.BTN_H, "Reset widths", function()
+        self:resetWidths(); if self.onResize then pcall(self.onResize) end
+    end)
+    if H.setTip then H.setTip(self.resetW, "Put every column of this table back to its default width.") end
     -- 0.2.6: one pager everywhere: -100 -10 Prev Page [n] of N Next +10 +100.
     -- The page number is a click-to-type box (Enter or click away to jump).
     self.pageLbl = text(root); H.setText(self.pageLbl, H.lbl("Page"))
@@ -158,6 +173,9 @@ function T:placePager()
         self.next:SetPos(x, y, 0.5, 0.0); x = x + 46
         for i = 3, 4 do if show[i] then J[i].c:SetPos(x, y, 0.5, 0.0); x = x + J[i].w + 4 end end
     end)
+    local custom = self:hasCustom()
+    H.setHidden({ self.resetW }, not custom)
+    if custom then H.safe(function() self.resetW:SetPos(self.x0 or 0, y) end) end
 end
 
 function T:nrows() return math.max(1, math.min(T.ROWS, self.visRows or T.ROWS)) end
@@ -166,16 +184,32 @@ function T:go(p) self.page = math.max(1, math.min(self:pages(), p)); self:bind()
 
 --- Column widths for the available width: fixed first, flex shares the rest;
 -- when there is not enough room every column shrinks proportionally.
+T.MINW = 24
+T.store = { get = function() return nil end, set = function() end }   -- set by main.lua
+function T:key()
+    local k = {}
+    for _, c in ipairs(self.cols) do k[#k + 1] = tostring(c.title or ""):gsub("<[^>]*>", "") end
+    return (self.keyPrefix or "") .. "|" .. table.concat(k, "/")
+end
+function T.save() end
+function T:resetWidths() self.over = {}; pcall(function() self.cw:reset() end) end
+function T:hasCustom() for c in ipairs(self.cols or {}) do if self.cw:stored(c) then return true end end; return false end
+--- called every logic tick by main.lua while a column is being dragged
+function T.tick() end   -- drags are driven by helpers.columns
 function T:widths(avail)
     local fixed, flex = 0, 0
-    for _, c in ipairs(self.cols) do
-        if c.w then fixed = fixed + c.w else fixed = fixed + (c.min or 40); flex = flex + (c.flex or 1) end
+    local ov = {}
+    for i in ipairs(self.cols) do if self.cw:stored(i) then ov[i] = self.cw:get(i) end end
+    self.over = ov
+    for i, c in ipairs(self.cols) do
+        if ov[i] then fixed = fixed + ov[i]
+        elseif c.w then fixed = fixed + c.w else fixed = fixed + (c.min or 40); flex = flex + (c.flex or 1) end
     end
     local spare = avail - fixed
     local out = {}
     for i, c in ipairs(self.cols) do
-        local w = c.w or (c.min or 40)
-        if spare > 0 and not c.w and flex > 0 then w = w + spare * (c.flex or 1) / flex end
+        local w = ov[i] or c.w or (c.min or 40)
+        if spare > 0 and not ov[i] and not c.w and flex > 0 then w = w + spare * (c.flex or 1) / flex end
         if spare < 0 then w = w * avail / fixed end
         out[i] = math.max(12, math.floor(w))
     end
@@ -201,6 +235,10 @@ end
 
 function T:setColumns(cols, data, onRow, iconKind)
     self.cols, self.data, self.onRow, self.iconKind = cols or {}, data or { count = 0 }, onRow, iconKind
+    self.cw.id = self:key()
+    local defs = {}
+    for i, c in ipairs(self.cols) do defs[i] = { w = c.w or c.min or 40, min = c.min or T.MINW, max = 900 } end
+    self.cw.defs = defs
     if self.page > self:pages() then self.page = self:pages() end
 end
 
@@ -219,6 +257,12 @@ function T:place(y, x0, avail, showJumps)
             H.setText(h, H.gold(col.title or ""))
             x = x + ws[c]
         end
+        local g = self.grips[c]
+        if col and c < #self.cols then
+            -- unsaved columns start a drag from their current drawn width
+            if self.cw.defs[c] and not self.cw:stored(c) then self.cw.defs[c].w = ws[c] end
+            g:place(x, y, H.ROW_HEIGHT); g:setHidden(false)
+        else g:setHidden(true) end
     end
     y = y + H.ROW_HEIGHT
     H.safe(function() self.div:SetPos(x0, y); self.div:SetSize(avail, 1) end)
