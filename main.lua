@@ -32,15 +32,14 @@
 local PLUGIN_NAME = "RS Dev Tools"
 local SLUG = "rs-dev-tools"
 local helpers = require("ui_helpers")
-helpers.VERSION = "0.3.0"
+helpers.VERSION = "0.4.0"
 local H = helpers
 local Table = require("dt_table")
 local FaqDialog = require("faq_dialog")
--- 0.2.14: edition flag. edition.lua is { unlimited = false } in the public
--- build; release/build_unlimited.py writes true for RS Dev Tools Unlimited.
-_RDT_UNL = false
+-- 0.4.0: single edition. The former Unlimited-only features are always on;
+-- _RDT_UNL stays as a constant so the old branches keep working.
+_RDT_UNL = true
 _RDT_HOOK = {}   -- 0.3.0: module event hook (main chunk is at the 200-local limit)
-pcall(function() local e = require("edition"); _RDT_UNL = type(e) == "table" and e.unlimited == true end)
 local TIPS = {}
 pcall(function() TIPS = require("tips_data") or {} end)
 TIPS.cols, TIPS.tabcols, TIPS.rows, TIPS.ctrl = TIPS.cols or {}, TIPS.tabcols or {}, TIPS.rows or {}, TIPS.ctrl or {}
@@ -237,7 +236,7 @@ CATG.TIP = {
     Inspect = "Look at this panel and the client: UI Inspector, Event Monitor, Perf Meter, Resource Monitor (live graphs), World Render (position and path markers), Layout Grid, Text Fit, Event Payloads, Camera & World, Component Tree, Profiler.",
     Plugins = "Plugin tools: Plugin Analyser, Submission Check, Settings, Reload Helper, PersistentDB, Permissions.",
     Assets = "Game assets: Sprite Browser (sprites, items, cursors) and Audio.",
-    Debug = "Diagnostics, Error Log, API Explorer, console Commands and Shapes & Canvas (Unlimited adds Automation, Visual Overrides, Deep Probe).",
+    Debug = "Diagnostics, Error Log, API Explorer, console Commands and Shapes & Canvas, Automation, Visual Overrides and Deep Probe.",
     Help = "Help, FAQ from the plugin developer Discord, and API Coverage.",
 }
 function CATG.of(t) for i, c in ipairs(CATG.CATS) do for _, x in ipairs(c.tabs) do if x == t then return i end end end; return 1 end
@@ -2227,7 +2226,7 @@ NT.hook.cost = function(d) NT.mon.acc.hcost = (NT.mon.acc.hcost or 0) + d end
 do
 -------------------------------------------------------------------------------
 -- 18. World Render (0.2.14): client-side debug markers (ported from Rotten
--- Potato). Entity hiding is Unlimited-only. All off on load (not saved) and
+-- Potato). Entity hiding is included. All off on load (not saved) and
 -- switched off in PluginShutdown. Nothing is sent to the game.
 -------------------------------------------------------------------------------
 NT.WR = { hideNpcs = false, hidePlayers = false, aura = false, trail = false, beam = false, col = 1, rad = 2,
@@ -2313,7 +2312,7 @@ NT.viewWorld = function()
 end
 
 -------------------------------------------------------------------------------
--- 19. Probe (Unlimited only): walks every global table, lists all members
+-- 19. Probe: walks every global table, lists all members
 -- with their type (documented or not). "Call ()" runs a selected function
 -- with no arguments after a Confirm click and shows what it returned.
 -------------------------------------------------------------------------------
@@ -2817,7 +2816,7 @@ local function buildPanel(w)
         btn(NT.T_WORLD, "All off", 64, function() WR.off(); refresh() end, nil, "__worldoff")
         helpers.setTip(ctrls[NT.T_WORLD][#ctrls[NT.T_WORLD]].c, "Turn every World Render option off.")
     end
-    -- 19 Probe (Unlimited)
+    -- 19 Probe
     if _RDT_UNL then
         PR.field = field(NT.T_PROBE, 170, "Filter names", "probe filter")
         btn(NT.T_PROBE, "Rescan", 60, function() PR.rows = nil; refresh() end, nil, "__probescan")

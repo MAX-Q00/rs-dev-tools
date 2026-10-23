@@ -1,3 +1,10 @@
+## RS Dev Tools 0.4.0 (2026-10-23)
+- Single edition: everything that was in RS Dev Tools Unlimited is now in RS Dev Tools, and the Unlimited edition is retired.
+- Debug tabs merged in: Automation (console macros with presets, step delay, repeat and Stop; destructive steps still need Confirm), Visual Overrides (hide ground items, hide yourself, NPC name filter), Deep Probe with Deep scan (read-only walk of the whole API, flags undocumented names and saves to PersistentDB rdt_probe), and the Probe tab (Call () needs Confirm).
+- Inspect > World Render: Hide NPCs and Hide other players.
+- Removed edition.lua, release/build_unlimited.py and release/unlimited_modules.
+- Settings saved by the old Unlimited plugin (its macros, rdt_probe) stay with that plugin and are not carried over.
+
 ## RS Dev Tools 0.3.0 (2026-10-23)
 - Developer harness tabs in their own module files: Event Payloads (all 43 events with counts, per second, subscribed by and a payload viewer; chat text hidden), Camera & World readouts, Component Tree, Profiler (timed API calls, layout and frame cost), Shapes & Canvas playground, PersistentDB browser/editor for this plugin's own data (Delete and Clear all need Confirm), Permissions status, and API Coverage (every documented entry and event, used or not, plus a live client check).
 - Commands tab: per-argument controls (ID and fixed-value arguments are dropdowns shown as 'ID - Name', counts/levels/XP are number boxes with - and +), a More info view explaining every argument in order (type, required or optional, default, meaning, valid values, example; unconfirmed items are labelled) with paged value lists (item and var names read from this client) that insert a value on click, and a Back button.
