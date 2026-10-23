@@ -32,7 +32,7 @@
 local PLUGIN_NAME = "RS Dev Tools"
 local SLUG = "rs-dev-tools"
 local helpers = require("ui_helpers")
-helpers.VERSION = "0.2.8"
+helpers.VERSION = "0.2.9"
 local H = helpers
 local Table = require("dt_table")
 local FaqDialog = require("faq_dialog")
@@ -1115,23 +1115,45 @@ local function viewFaq()
     end
     return { cols = { { title = "#", w = 28 }, { title = "Question", flex = 1, min = 90 }, { title = "Solution", flex = 2, min = 100 } }, data = arr(rows),
         onRow = function(i)
+            -- 0.2.9: a click shows the question and its main answer here;
+            -- only More info opens the whole conversation in the pop-up.
             sel[T_FAQ] = rows[i].e; tbl.selected = i
             local list = {}
             for k, r in ipairs(rows) do list[k] = r.e end
-            local ok = FaqDialog.open(list, i)
-            if not ok then logError("Help dialog", "could not open the answer window") end
+            NT.faqList, NT.faqIdx = list, i
         end,
         detail = function()
             if #FAQ == 0 then return { lines = { H.col(H.C_WARN, "No FAQ entries yet: the Discord research file has not been added to this build.") } } end
             local e = sel[T_FAQ]
-            if e == nil then return { lines = { H.lbl(#FAQ .. " entries from the plugin developer Discord research (Oct 19-22, 2026). Click a row to open the full answer.") } } end
-            local w = areaW() - 8
-            local lines = {}
-            for _, l in ipairs(wrap("Q" .. (e.n or "") .. ": " .. plain(e.q), w, 2)) do lines[#lines + 1] = H.gold(l) end
-            for _, l in ipairs(wrap("A: " .. plain(e.a), w, DETAIL_N - 1 - #lines)) do lines[#lines + 1] = H.val(l) end
-            lines[#lines + 1] = H.lbl(plain(e.section or "") .. "  |  " .. plain(e.freq or "")) .. H.lbl("  (full answer in the copy field)")
-            return { lines = lines, copy = plain(e.a) }
+            if e == nil then return { lines = { H.lbl(#FAQ .. " questions from the plugin developer Discord (Oct 19-23, 2026). Click a row to see the question and main answer; More info shows the whole conversation.") } } end
+            return NT.faqSummary(e, areaW() - 8, wrap)
         end }
+end
+-- 0.2.9: inline summary for the selected FAQ entry (kept out of the main
+-- chunk's locals: it is at Lua's 200-local limit).
+NT.faqSummary = function(e, w, wrapf)
+    local function who(p)
+        if p == nil then return "" end
+        local t = plain(p.user or "Unknown user")
+        if (p.tag or "") ~= "" then t = t .. " [" .. plain(p.tag) .. "]" end
+        if (p.date or "") ~= "" then t = t .. ", " .. plain(p.date) end
+        return t
+    end
+    local posts = type(e.posts) == "table" and e.posts or {}
+    local qp, ap, nrep = nil, nil, 0
+    for _, p in ipairs(posts) do
+        if p.role == "Q" then qp = qp or p else nrep = nrep + 1; if ap == nil or (p.tag == "Jagex staff" and ap.tag ~= "Jagex staff") then ap = p end end
+    end
+    local lines = {}
+    for _, l in ipairs(wrapf("Q" .. (e.n or "") .. ": " .. plain(e.q), w, 2)) do lines[#lines + 1] = H.gold(l) end
+    if qp then lines[#lines + 1] = H.lbl("Asked by ") .. H.col("ffcc44", who(qp)) end
+    if ap then
+        lines[#lines + 1] = H.lbl("Main answer by ") .. H.col(ap.tag == "Jagex staff" and "ff9a3c" or "9fd3ff", who(ap))
+        local room = DETAIL_N - 1 - #lines
+        for _, l in ipairs(wrapf(plain(table.concat(ap.lines or {}, " ")), w, room)) do lines[#lines + 1] = H.val(l) end
+    end
+    lines[#lines + 1] = H.lbl(nrep .. (nrep == 1 and " reply" or " replies") .. " in the conversation. More info shows every post.")
+    return { lines = lines, more = true }
 end
 
 -- Audio bus test: one click plays the selected sound (or the first in the
@@ -2097,6 +2119,12 @@ layout = function()
         pcall(function() if detail.copy.content ~= c then detail.copy.content = c end end)
         y = cy + H.BTN_H + 4
     end
+    helpers.setHidden({ NT.moreBtn }, not (d ~= nil and d.more))
+    if d ~= nil and d.more then
+        local my = math.max(y + 2, top)
+        helpers.safe(function() NT.moreBtn:SetPos(H.PAD, my) end)
+        y = my + H.BTN_H + 4
+    end
     if n > 0 or pv or hasCopy then y = y + 6 end
     if state.tab == T_GRID then placeGrid(y); y = y + GRID_H + 6 else placeGrid(nil) end
     if state.tab == T_FIT then placeFit(y); y = y + H.ROW_HEIGHT + 10 else placeFit(nil) end
@@ -2369,6 +2397,12 @@ local function buildPanel(w)
     helpers.safe(function() detail.copy.hidden = true end)
     helpers.setTip(detail.copy, "Full copy-ready text: click, select all, copy. It goes back to the short view when you pick another row.")
     detail.copySel = helpers.button(root, 0, 0, 56, H.BTN_H, "Select", function() detail.editing = not detail.editing; refresh() end)
+    NT.moreBtn = helpers.button(root, 0, 0, 84, H.BTN_H, "More info", function()
+        if NT.faqList == nil then return end
+        local ok = FaqDialog.open(NT.faqList, NT.faqIdx or 1)
+        if not ok then logError("Help dialog", "could not open the conversation window") end
+    end)
+    pcall(function() helpers.setTip(NT.moreBtn, "Open the whole conversation: the question and every reply, each with the Discord name of who posted it.") end)
     helpers.safe(function() detail.copySel.hidden = true end)
     helpers.setTip(detail.copySel, TIPS.ctrl["Select"])
     R("copy field", "InputField", detail.copy); R("copy text", "Text", detail.copyShow); R("copy select", "Button", detail.copySel)

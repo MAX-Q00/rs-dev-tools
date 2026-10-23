@@ -1,5 +1,7 @@
 --[[
-  faq_dialog.lua (RS Dev Tools 0.2.1): the Help/FAQ answer window.
+  faq_dialog.lua (RS Dev Tools 0.2.9): the Help/FAQ conversation window
+  (opened by More info). Shows the question post and every reply as its own
+  labelled block with the Discord poster's name.
   A separate draggable panel on the plugin layer: centred title, whole top
   bar drags, any click brings it to the front, X and Close, Prev and Next.
   The question is the heading; the answer is word-wrapped with no
@@ -12,7 +14,7 @@
 local H = require("ui_helpers")
 local D = {}
 local W, HGT = 480, 460
-local VIS = 13                      -- answer lines visible at once
+local VIS = 16                      -- conversation lines visible at once
 local box, parts, cur, list, scroll, ansLines = nil, nil, nil, nil, 0, {}
 local copyOpen = false   -- Copy button swaps the code block for a selectable field
 
@@ -68,29 +70,77 @@ end
 
 local function bodyW() return W - 2 * H.PAD - 16 end
 
+-- 0.2.9: the answer is the conversation: the question post first, then
+-- every reply as its own block (header band with the poster's Discord name,
+-- staff/community tag and date, the post's own lines, a divider between
+-- posts). Each post line keeps its own line break; nothing is merged.
+local C_Q, C_A, C_STAFF, C_TAG = "ffcc44", "9fd3ff", "ff9a3c", "a8a090"
+local function buildLines(e, w)
+    local out = {}
+    local posts = type(e.posts) == "table" and e.posts or {}
+    if #posts == 0 then posts = { { role = "A", user = "Unknown user", tag = "", lines = { e.a } } } end
+    local nr = 0
+    for k, p in ipairs(posts) do
+        if k > 1 then out[#out + 1] = { kind = "rule" } end
+        local isQ = p.role == "Q"
+        local label
+        if isQ then label = (k == 1) and "Question" or "Follow-up" else nr = nr + 1; label = "Reply " .. nr end
+        local user = plain(p.user ~= "" and p.user or "Unknown user")
+        local tag = plain(p.tag or "")
+        local hdr = H.col(isQ and C_Q or C_A, label .. ":  " .. user)
+        if tag ~= "" then hdr = hdr .. H.col(tag == "Jagex staff" and C_STAFF or C_TAG, "  [" .. tag .. "]") end
+        if (p.date or "") ~= "" then hdr = hdr .. H.col(C_TAG, "  " .. plain(p.date)) end
+        out[#out + 1] = { kind = "head", text = hdr, q = isQ }
+        for _, ln in ipairs(type(p.lines) == "table" and p.lines or {}) do
+            local wl = wrap(H.FONT, plain(ln), w - 10)
+            for j, l in ipairs(wl) do out[#out + 1] = { kind = "text", text = H.val(l), indent = j > 1 } end
+        end
+    end
+    return out
+end
+
 local function render()
     if box == nil or cur == nil then return end
     local e = list[cur]
     local RH = H.ROW_HEIGHT
     H.safe(function() parts.title.content = H.col(H.C_TITLE, "Help/FAQ  " .. cur .. " of " .. #list) end)
     local q = wrap(H.TITLE_FONT, "Q" .. tostring(e.n or "") .. ". " .. plain(e.q), W - 2 * H.PAD)
+    if #q > 3 then q[3] = q[3] .. " ..." end    -- the full question is the first post
     for i = 1, 3 do H.safe(function() parts.q[i].content = q[i] and H.gold(q[i]) or ""; parts.q[i].hidden = q[i] == nil end) end
-    if #q > 3 then H.safe(function() parts.q[3].content = H.gold(q[3] .. " " .. table.concat(q, " ", 4)) end) end
+    local y = H.TITLE_HEIGHT + 8 + math.min(3, #q) * RH
     local meta = plain(e.where or "")
     if (e.freq or "") ~= "" then meta = meta .. (meta ~= "" and "  |  " or "") .. "Asked: " .. plain(e.freq) end
-    H.safe(function() parts.meta.content = H.lbl(meta ~= "" and meta or "source not recorded") end)
-    local y = H.TITLE_HEIGHT + 8 + math.min(3, #q) * RH
-    H.safe(function() parts.meta:SetPos(H.PAD, y) end)
-    y = y + RH + 4
-    -- answer, wrapped, scrolled
-    ansLines = wrap(H.FONT, plain(e.a), bodyW())
+    local ml = wrap(H.FONT, meta ~= "" and meta or "source not recorded", W - 2 * H.PAD)
+    for i = 1, 2 do
+        local l = ml[i]
+        if i == 2 and #ml > 2 then l = l .. " ..." end
+        H.safe(function() parts.meta[i]:SetPos(H.PAD, y + (i - 1) * RH); parts.meta[i].content = l and H.lbl(l) or ""; parts.meta[i].hidden = l == nil end)
+    end
+    y = y + math.min(2, #ml) * RH + 4
+    ansLines = buildLines(e, bodyW())
     local maxS = math.max(0, #ansLines - VIS)
     if scroll > maxS then scroll = maxS end
+    local shown = math.min(VIS, #ansLines)
     for i = 1, VIS do
         local l = ansLines[scroll + i]
-        H.safe(function() parts.a[i]:SetPos(H.PAD, y + (i - 1) * RH); parts.a[i].content = l and H.val(l) or "" end)
+        local ly = y + (i - 1) * RH
+        H.safe(function()
+            local t, band, rule = parts.a[i], parts.band[i], parts.rule[i]
+            t.hidden = l == nil or l.kind == "rule"
+            band.hidden = l == nil or l.kind ~= "head"
+            rule.hidden = l == nil or l.kind ~= "rule"
+            if l == nil then return end
+            if l.kind == "rule" then rule:SetPos(H.PAD, ly + math.floor(RH / 2)); rule:SetSize(bodyW(), 1); return end
+            if l.kind == "head" then
+                band:SetPos(H.PAD, ly + 1); band:SetSize(bodyW(), RH - 2)
+                band.colour = l.q and Vector4.new(0.24, 0.19, 0.08, 0.95) or Vector4.new(0.10, 0.16, 0.22, 0.95)
+                t:SetPos(H.PAD + 4, ly); t.content = l.text
+            else
+                t:SetPos(H.PAD + 10, ly); t.content = l.text
+            end
+        end)
     end
-    local trackH = VIS * RH
+    local trackH = math.max(shown, 3) * RH
     local sx = W - H.PAD - 12
     H.safe(function()
         parts.track:SetPos(sx, y + 20); parts.track:SetSize(12, trackH - 40)
@@ -169,7 +219,7 @@ function D.open(entries, i)
             box:SetPos(-math.floor(W / 2), -math.floor(HGT / 2), 0.5, 0.5)
             pcall(function() box.colour = Vector4.new(0.62, 0.60, 0.58, 1.0) end)
             H.blockClicks(box)
-            parts = { q = {}, a = {}, code = {}, tipped = {} }
+            parts = { q = {}, a = {}, band = {}, rule = {}, meta = {}, code = {}, tipped = {} }
             local body = rect(box, 0.07, 0.06, 0.045, 0.97); body:SetPos(2, 2); body:SetSize(-4, -4, 1.0, 1.0)   -- opaque
             local band = rect(box, 0.13, 0.11, 0.07, 0.85); band:SetPos(2, 2); band:SetSize(-4, H.TITLE_HEIGHT, 1.0, 0.0)
             for k, c in ipairs({ { 0, 34, 27, 19, 1.0 }, { 1, 87, 78, 46, 1.0 }, { 2, 73, 65, 42, 0.9 } }) do
@@ -189,15 +239,21 @@ function D.open(entries, i)
                 parts.q[i2] = text(box, H.TITLE_FONT); parts.q[i2]:SetPos(H.PAD, H.TITLE_HEIGHT + 8 + (i2 - 1) * H.ROW_HEIGHT)
                 parts.q[i2]:SetSize(W - 2 * H.PAD, H.ROW_HEIGHT)
             end
-            parts.meta = text(box); parts.meta:SetSize(W - 2 * H.PAD, H.ROW_HEIGHT)
-            H.setTip(parts.meta, "Where and when this was discussed in the plugin developer Discord, and how often it came up.")
-            parts.tipped[#parts.tipped + 1] = parts.meta
-            for i2 = 1, VIS do parts.a[i2] = text(box); parts.a[i2]:SetSize(bodyW(), H.ROW_HEIGHT) end
+            for i2 = 1, 2 do
+                parts.meta[i2] = text(box); parts.meta[i2]:SetSize(W - 2 * H.PAD, H.ROW_HEIGHT)
+                H.setTip(parts.meta[i2], "Where and when this was discussed in the plugin developer Discord, and how often it came up.")
+                parts.tipped[#parts.tipped + 1] = parts.meta[i2]
+            end
+            for i2 = 1, VIS do
+                parts.band[i2] = rect(box, 0.10, 0.16, 0.22, 0.95); parts.band[i2].hidden = true
+                parts.rule[i2] = rect(box, 87 / 255, 78 / 255, 46 / 255, 1.0); parts.rule[i2].hidden = true
+            end
+            for i2 = 1, VIS do parts.a[i2] = text(box); parts.a[i2]:SetSize(bodyW() - 14, H.ROW_HEIGHT) end
             parts.track = rect(box, 0.11, 0.10, 0.09, 0.94)
             parts.thumb = rect(box, 0.78, 0.70, 0.52, 0.9)
             parts.up = H.button(box, 0, 0, 16, 18, "^", function() scroll = math.max(0, scroll - 3); render() end, true)
             parts.dn = H.button(box, 0, 0, 16, 18, "v", function() scroll = scroll + 3; render() end, true)
-            H.setTip(parts.up, "Scroll the answer up 3 lines."); H.setTip(parts.dn, "Scroll the answer down 3 lines.")
+            H.setTip(parts.up, "Scroll the conversation up 3 lines."); H.setTip(parts.dn, "Scroll the conversation down 3 lines.")
             parts.tipped[#parts.tipped + 1] = parts.up; parts.tipped[#parts.tipped + 1] = parts.dn
             parts.codeBg = rect(box, 0.07, 0.06, 0.05, 0.95)
             for i2 = 1, 3 do parts.code[i2] = text(box); parts.code[i2]:SetSize(W - 2 * H.PAD - 12, H.ROW_HEIGHT) end

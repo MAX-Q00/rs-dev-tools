@@ -2,7 +2,7 @@
 
 Tools for RuneScape plugin makers: UI and plugin layer inspector, event monitor, sprite, item and sound browsers, diagnostics, error log with stack traces, API explorer and a developer FAQ.
 
-Current version: 0.2.8
+Current version: 0.2.9
 
 - Install from mod.io: https://mod.io/g/runescape/m/rs-dev-tools
 
