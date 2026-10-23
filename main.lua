@@ -32,7 +32,7 @@
 local PLUGIN_NAME = "RS Dev Tools"
 local SLUG = "rs-dev-tools"
 local helpers = require("ui_helpers")
-helpers.VERSION = "0.2.11"
+helpers.VERSION = "0.2.12"
 local H = helpers
 local Table = require("dt_table")
 local FaqDialog = require("faq_dialog")
@@ -1655,16 +1655,17 @@ viewCmd = function()
         local cheat = c[1]:sub(1, 1) == "!"
         if cheat and not dividerDone then
             dividerDone = true
-            rows[#rows + 1] = { H.col(RED, "Cheat (!)"), H.col(RED, "----------"), H.col(RED, "dev worlds only, logged on the server; risky ones ask to confirm"), H.col(RED, "verified?"), divider = true }
+            rows[#rows + 1] = { H.col(RED, "Cheat (!)"), H.col(RED, "----------"), H.col(RED, "dev worlds only, logged on the server; risky ones ask to confirm"), divider = true }
         end
         local a = {}
         for k in ipairs(c[2]) do a[#a + 1] = hintOf(c, k) end
         local desc = c[3]:gsub("^Dev cheat: ", ""):gsub("%. Logged on the server$", "")
         rows[#rows + 1] = { cheat and H.col(RED, c[1]) or H.val(c[1]), H.lbl(#a > 0 and table.concat(a, " ") or "-"), cheat and H.col(RED, desc) or H.lbl(desc),
-            c[6] and H.col(c[6] == "docs only" and H.C_WARN or (c[6] == "Discord: broken" and H.C_BAD or H.C_GOOD), "Docs, " .. c[6]) or H.lbl((c[4]:gsub("API docs: ", "Docs: "))), c = c,
-            tip = c[1] .. ": " .. c[3] .. ". Source: " .. c[4] .. (c[6] and (". Status: " .. c[6] .. " (not yet tested by RS Dev Tools in the beta client; Discord Oct 19 said dev-world cheats were not working as intended)") or "") .. "." }
+            c = c,
+            tip = "Syntax: " .. c[1] .. (#a > 0 and (" " .. table.concat(a, " ")) or "") .. ". " .. desc .. "." }
+
     end
-    return { cols = { { title = "Command", w = 84 }, { title = "Args", w = 96 }, { title = "Description", flex = 1, min = 120 }, { title = "Source / verified", w = 110, tip = "Where the command is documented and whether it is confirmed working in the beta client. Hover a row for details." } }, data = arr(rows),
+    return { cols = { { title = "Command", w = 84 }, { title = "Syntax / args", w = 150 }, { title = "Description", flex = 1, min = 120 } }, data = arr(rows),
         onRow = function(i) if rows[i].divider then return end; cmd.sel = rows[i].c; sel[T_CMD] = rows[i].c; tbl.selected = i; cmd.pending = nil; cmd.note = nil end,
         detail = function()
             local text, err = cmdBuild()
