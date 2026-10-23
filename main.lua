@@ -1,0 +1,2038 @@
+--[[
+  RS Dev Tools
+  ------------
+  One panel with tabs of small tools for people writing RuneScape plugins.
+  Every list is shown in one shared table (dt_table.lua).
+
+  Guideline notes for moderators:
+    * Display only, with one exception the user asked for: the Commands tab
+      sends a console command with ExecuteConsoleCommand only when the user
+      clicks Run (dev tools such as prl, plist, displayfps; poff / prl of RS
+      Dev Tools itself and !resetsave need a second Confirm click). Nothing
+      runs on its own or on a timer. Sends no other input, menu actions or
+      packets and changes no client settings (game.options is read, never
+      Set). Nothing is drawn at the mouse; the browser is view only.
+    * No permissions. Uses only documented API: Event subscriptions (read
+      only, payloads are never modified), Mouse position, ui components,
+      id / config lookups, audio.Play (MASTER for browsing; the Bus test plays
+      one sound on a bus the user clicks), and PersistentDB
+      for this plugin's own data (records are isolated per plugin).
+    * Key events are only counted; which key was pressed is never read,
+      shown or stored.
+    * Diagnostics, Known gaps and Help/FAQ use only the plugin developer
+      Discord research (faq_data.lua, generated) and the official docs.
+    * Plugin Analyser reads the shared plugin interface layer (the parent
+      every plugin panel is built on) read only: component type, position,
+      size, visibility and visible text. It never changes, clicks or moves
+      another plugin's components. Optional opt-in hooks: a plugin may return
+      a devInfo function from its main.lua; RS Dev Tools only calls it when
+      that plugin is listed in optionalDependencies (none in this release).
+]]
+
+local PLUGIN_NAME = "RS Dev Tools"
+local SLUG = "rs-dev-tools"
+local helpers = require("ui_helpers")
+helpers.VERSION = "0.2.6"
+local H = helpers
+local Table = require("dt_table")
+local FaqDialog = require("faq_dialog")
+local TIPS = {}
+pcall(function() TIPS = require("tips_data") or {} end)
+TIPS.cols, TIPS.tabcols, TIPS.rows, TIPS.ctrl = TIPS.cols or {}, TIPS.tabcols or {}, TIPS.rows or {}, TIPS.ctrl or {}
+local FAQ = {}
+pcall(function() FAQ = require("faq_data") or {} end)
+if type(FAQ) ~= "table" then FAQ = {} end
+
+-------------------------------------------------------------------------------
+-- Settings
+-------------------------------------------------------------------------------
+local KEY = "rs_dev_tools"
+local state = {}
+pcall(function() state = PersistentDB:GetStructuredData(KEY) or {} end)
+if type(state) ~= "table" then state = {} end
+state.tab = math.tointeger(state.tab) or 1
+-- 0.2.6: sounds always play at volume 1.0. The client treats any
+-- SoundPlaybackParams.volume below 1 as 0 (FAQ 28), and 0.2.0 saved 50% as
+-- the default, so every Dev Tools sound was silent. The old setting is dropped.
+state.vol = nil
+state.bus = type(state.bus) == "string" and state.bus or "MASTER"
+state.gridStep = math.tointeger(state.gridStep) or 2
+state.fontIdx = math.tointeger(state.fontIdx) or 1
+state.fitW = math.tointeger(state.fitW) or 3
+state.set = (state.set == "item" or state.set == "cursor") and state.set or "sprite"
+local function save() pcall(function() PersistentDB:SetStructuredData(KEY, state) end) end
+
+-- Display form: '_' as space, spaces collapsed, trimmed. Search form: lower case.
+local function nice(n) return (tostring(n or ""):gsub("_", " "):gsub("%s+", " "):gsub("^ ", ""):gsub(" $", "")) end
+local function norm(q) return string.lower(nice(q)) end
+local function plain(s) return (tostring(s or ""):gsub("[<>]", "")) end   -- labels never carry < or >
+local function untag(s) return plain((tostring(s or ""):gsub("<[^>]*>", ""))) end
+local function fmt(v, d)
+    if type(v) ~= "number" then return "-" end
+    return string.format("%." .. (d or 1) .. "f", v)
+end
+local function commas(n)
+    local s2 = tostring(n); local k
+    repeat s2, k = string.gsub(s2, "^(%d+)(%d%d%d)", "%1,%2") until k == 0
+    return s2
+end
+
+-------------------------------------------------------------------------------
+-- Error log with stack traces (this plugin's own callbacks; other plugins'
+-- errors are not visible to plugins). Every subscription below goes
+-- through xpcall so a failure is recorded with debug.traceback when the
+-- client provides it.
+-------------------------------------------------------------------------------
+local ticks = 0
+local errlog = {}
+local subs = {}          -- event name -> true/false (subscribe succeeded)
+local hasTrace = false
+pcall(function() hasTrace = type(debug) == "table" and type(debug.traceback) == "function" end)
+local function logError(where, msg, trace)
+    table.insert(errlog, 1, { t = ticks, where = plain(where), msg = untag(msg), trace = trace and untag(trace) or nil })
+    if #errlog > 60 then errlog[#errlog] = nil end
+end
+local function guarded(where, fn, ...)
+    local trace = nil
+    local ok, r = xpcall(fn, function(e)
+        if hasTrace then pcall(function() trace = debug.traceback(tostring(e), 2) end) end
+        return e
+    end, ...)
+    if not ok then logError(where, r, trace) end
+    return ok, r
+end
+helpers.subscribe = function(pluginName, eventName, refName, fn)
+    local ok, err = pcall(function()
+        Event[eventName].Subscribe(refName, function(...) guarded(eventName, fn, ...) end)
+    end)
+    subs[eventName] = ok
+    if not ok then logError("subscribe " .. eventName, err) end
+end
+local baseLog = helpers.log
+helpers.log = function(s)
+    if type(s) == "string" and s:find("ERROR", 1, true) then logError("helpers.log", s) end
+    if baseLog then pcall(baseLog, s) end
+end
+
+-------------------------------------------------------------------------------
+-- Clock: logic ticks since load (50 per second, per the Events docs).
+-------------------------------------------------------------------------------
+
+local function secs() return ticks / 50 end
+
+-------------------------------------------------------------------------------
+-- Event Monitor: counts for every documented event that needs no permission.
+-- ChatMessage needs chatAccess and is left out. Payloads are never modified.
+-------------------------------------------------------------------------------
+local EVENTS = { "Logic", "ServerLogic", "Draw", "KeyDown", "KeyUp", "KeyTyped",
+    "VarTransmit", "GameStateChanged", "WindowFocusChanged", "WindowSizeChanged",
+    "SkillTransmit", "RunEnergyTransmit", "RunWeightTransmit",
+    "PlayerEntityAdded", "PlayerEntityRemoved", "NPCEntityAdded", "NPCEntityRemoved",
+    "ObjStackEntityAdded", "ObjStackEntityRemoved", "ObjStackEntityChanged",
+    "LocAdded", "LocRemoved", "InventoryAdded", "InventoryUpdated", "InventoryRemoved",
+    "MiniMenuOpened", "MiniMenuClosed", "GrandExchangeOfferUpdated",
+    "WorldCreated", "RegionCreated" }
+local TICKY = { Logic = true, ServerLogic = true, Draw = true }
+local ev = { counts = {}, last = {}, log = {}, paused = false, since = 0 }
+local function evSummary(name, e)
+    local s = ""
+    pcall(function()
+        if name == "GameStateChanged" then s = "state " .. tostring(e.newState)
+        elseif name == "WindowSizeChanged" then s = tostring(e.newWidth) .. " x " .. tostring(e.newHeight)
+        elseif name == "WindowFocusChanged" then s = "focus " .. tostring(e.focused or e.hasFocus or "?")
+        end
+    end)
+    return plain(s)
+end
+local function onEvent(name, e)
+    if ev.paused then return end
+    ev.counts[name] = (ev.counts[name] or 0) + 1
+    ev.last[name] = ticks
+    if not TICKY[name] then
+        table.insert(ev.log, 1, { t = ticks, name = name, info = evSummary(name, e) })
+        if #ev.log > 40 then ev.log[#ev.log] = nil end
+    end
+end
+
+-------------------------------------------------------------------------------
+-- Perf Meter: frame times from Draw.timeDeltaSecs, logic and server tick rates.
+-------------------------------------------------------------------------------
+local perf = { frames = {}, drawTime = 0, logicAtSec = 0, logicRate = nil,
+    srvLast = nil, srvGaps = {}, cost = {}, hasClock = false }
+pcall(function() perf.hasClock = type(os) == "table" and type(os.clock) == "function" and type(os.clock()) == "number" end)
+local function perfReset()
+    perf.frames, perf.srvGaps, perf.cost = {}, {}, {}
+    perf.drawTime, perf.logicAtSec, perf.logicRate, perf.srvLast = 0, ticks, nil, nil
+    perf.secStart = 0
+end
+perfReset()
+local function onDraw(e)
+    local dt = nil
+    pcall(function() dt = e.timeDeltaSecs end)
+    if type(dt) ~= "number" or dt <= 0 or dt > 5 then return end
+    perf.drawTime = perf.drawTime + dt
+    local f = perf.frames
+    f[#f + 1] = dt
+    if #f > 300 then table.remove(f, 1) end
+    if perf.drawTime - perf.secStart >= 1 then
+        perf.logicRate = (ticks - perf.logicAtSec) / (perf.drawTime - perf.secStart)
+        perf.logicAtSec, perf.secStart = ticks, perf.drawTime
+    end
+end
+local function onServer()
+    if perf.srvLast ~= nil then
+        local g = perf.srvGaps
+        g[#g + 1] = perf.drawTime - perf.srvLast
+        if #g > 50 then table.remove(g, 1) end
+    end
+    perf.srvLast = perf.drawTime
+end
+
+for _, name in ipairs(EVENTS) do
+    helpers.subscribe(PLUGIN_NAME, name, "rdtMon" .. name, function(e)
+        onEvent(name, e)
+        if name == "Draw" then onDraw(e) elseif name == "ServerLogic" then onServer() end
+    end)
+end
+
+-------------------------------------------------------------------------------
+-- Own component registry (UI Inspector).
+-------------------------------------------------------------------------------
+local reg = {}
+local function R(name, kind, c) if c ~= nil then reg[#reg + 1] = { name = name, kind = kind, c = c } end; return c end
+
+-------------------------------------------------------------------------------
+-- Shared bits
+-------------------------------------------------------------------------------
+local TABS = { "UI Inspector", "Plugin Analyser", "Event Monitor", "Sprite Browser", "Audio",
+    "Settings", "Perf Meter", "Layout Grid", "Text Fit", "Reload Helper", "Help/FAQ",
+    "Diagnostics", "Error Log", "API Explorer", "Commands" }
+local T_UI, T_PLUG, T_EV, T_BROWSE, T_AUDIO, T_SET, T_PERF, T_GRID, T_FIT, T_RELOAD, T_FAQ = 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11
+local T_DIAG, T_ERR, T_API, T_CMD = 12, 13, 14, 15
+-- 0.2.6 (review): 5 categories in one row, the category's tabs underneath.
+local CATG = {}
+CATG.CATS = {
+    { name = "Inspect", tabs = { T_UI, T_EV, T_PERF, T_GRID, T_FIT } },
+    { name = "Plugins", tabs = { T_PLUG, T_SET, T_RELOAD } },
+    { name = "Assets",  tabs = { T_BROWSE, T_AUDIO } },
+    { name = "Debug",   tabs = { T_DIAG, T_ERR, T_API, T_CMD } },
+    { name = "Help",    tabs = { T_FAQ } },
+}
+CATG.TIP = {
+    Inspect = "Look at this panel and the client: UI Inspector, Event Monitor, Perf Meter, Layout Grid, Text Fit.",
+    Plugins = "Plugin tools: Plugin Analyser, Settings, Reload Helper.",
+    Assets = "Game assets: Sprite Browser (sprites, items, cursors) and Audio.",
+    Debug = "Diagnostics, Error Log, API Explorer and console Commands.",
+    Help = "Help and FAQ from the plugin developer Discord.",
+}
+function CATG.of(t) for i, c in ipairs(CATG.CATS) do for _, x in ipairs(c.tabs) do if x == t then return i end end end; return 1 end
+CATG.catBtns = {}
+local tabBtns, tabHi = {}, nil
+local ctrls = {}            -- tab index -> { { c = comp, w = width, show = fn|nil } ... }
+local tbl = nil             -- the shared table
+local sel = {}              -- tab index -> selected row data
+local detail = {}           -- detail view pieces
+local preview = {}          -- grid / text fit pieces
+local settingsUI
+local root = nil
+local lastW = nil
+local frozen = false
+local layout, refresh
+local DETAIL_N = 8   -- 0.2.6: declared before the FAQ views that use it
+
+local function tw(s) return helpers.textWidthOf(H.FONT, s) or (#s * 7) end
+local function newText(parent, w)
+    local t = nil
+    pcall(function()
+        t = ui.Text.new(parent)
+        t:SetSize(w, H.ROW_HEIGHT, w < 0 and 1.0 or 0.0, 0.0)
+        t.font = H.FONT
+        t.content = ""
+        t:AlignTo(ui.AlignMode.TOPLEFT, ui.AlignMode.CENTRE)
+        helpers.shadow(t)
+    end)
+    return t
+end
+local function addCtrl(tab, c, w, name, kind, show)
+    ctrls[tab] = ctrls[tab] or {}
+    ctrls[tab][#ctrls[tab] + 1] = { c = c, w = w, show = show }
+    R(name or "control", kind or "Button", c)
+    return c
+end
+local function ctrlTip(key)
+    local t = TIPS.ctrl[key]
+    if t == nil and type(key) == "string" then
+        if key:find("^ID [%+%-]") then t = "Jump this many IDs forward or back."
+        elseif key:find("^Grid ") then t = "Grid spacing in interface units. Click to change."
+        elseif key:find("^Box ") then t = "Width of the test box in interface units. Click to change."
+        elseif key:find("^Letter") then t = "Show only names starting with this letter. Click to change."
+        elseif key:match("^%d$") then t = "Type this digit into the ID keypad." end
+    end
+    return t
+end
+local function btn(tab, label, w, fn, show, tipKey)
+    w = w or (tw(label) + 16)
+    local b = addCtrl(tab, helpers.button(root, 0, 0, w, H.BTN_H, label, fn), w, label, "Button", show)
+    local tk = tipKey or label
+    helpers.setTip(b, function() local l = nil; pcall(function() l = untag(b.label) end); return ctrlTip(tipKey or l or tk) end)
+    return b
+end
+local function field(tab, w, placeholder, name, show)
+    local f = addCtrl(tab, helpers.input(root, 0, 0, w, H.BTN_H, placeholder), w, name, "InputField", show)
+    helpers.setTip(f, ctrlTip(name))
+    return f
+end
+local function readField(f, maxLen)
+    local t = ""
+    pcall(function() t = tostring(f.content or "") end)
+    return helpers.cleanText(t, maxLen or 64)
+end
+local function setLabel(b, s) helpers.setText(b, plain(s), "label") end
+local function areaW() local w = 300; pcall(function() w = root.width - 2 * H.PAD end); return math.max(60, w) end
+-- list data from a plain array of row arrays
+local function arr(rows) return { count = #rows, get = function(i) return rows[i] end } end
+local function kv(k, v) return { H.val(plain(k)), H.lbl(plain(v)) } end
+local function wrap(s, width, maxLines)
+    local out, line = {}, ""
+    for word in tostring(s or ""):gmatch("%S+") do
+        local t = line == "" and word or (line .. " " .. word)
+        if line ~= "" and tw(t) > width then out[#out + 1] = line; line = word else line = t end
+        if #out >= maxLines then break end
+    end
+    if line ~= "" and #out < maxLines then out[#out + 1] = line end
+    return out
+end
+local function rectOf(c)
+    local r = nil
+    pcall(function()
+        local p = c.xyGlobal
+        r = { x = math.floor(p.x or 0), y = math.floor(p.y or 0), w = math.floor(c.width or 0), h = math.floor(c.height or 0), hidden = c.hidden == true }
+    end)
+    return r
+end
+local function rs(r) return r and (r.x .. ", " .. r.y) or "-" end
+local function sz(r) return r and (r.w .. " x " .. r.h) or "-" end
+
+-------------------------------------------------------------------------------
+-- 1. UI Inspector (this plugin's components)
+-------------------------------------------------------------------------------
+local uiMode = "summary"
+local function viewUI()
+    if uiMode == "summary" then
+        local L = {}
+        local px, py = nil, nil
+        pcall(function() if Mouse.IsAvailable() then local p = Mouse.GetPosition(); px, py = p.x, p.y end end)
+        local ux, uy = helpers.mouseUI()
+        L[#L + 1] = kv("Mouse (window px)", px and (math.floor(px) .. ", " .. math.floor(py)) or "not available")
+        L[#L + 1] = kv("Mouse (UI units)", ux and (math.floor(ux) .. ", " .. math.floor(uy)) or "not available")
+        local pr = helpers.panelRect()
+        L[#L + 1] = kv("This panel position", pr and (pr.x .. ", " .. pr.y) or "-")
+        L[#L + 1] = kv("This panel size", pr and (pr.w .. " x " .. pr.h) or "-")
+        local over = {}
+        if ux then for _, e in ipairs(reg) do if helpers.isOver(e.c, ux, uy) then over[#over + 1] = e.name end end end
+        L[#L + 1] = kv("Under mouse", #over > 0 and table.concat(over, ", ") or "none of this plugin's components")
+        L[#L + 1] = kv("Components", #reg)
+        L[#L + 1] = kv("Other panels", "see the Plugin Analyser tab")
+        return { cols = { { title = "Property", w = 150 }, { title = "Value", flex = 1, min = 80 } }, data = arr(L) }
+    end
+    return {
+        cols = { { title = "Component", flex = 2, min = 80 }, { title = "Type", w = 90 }, { title = "Position", w = 80 },
+            { title = "Size", w = 70 }, { title = "State", w = 52 } },
+        data = { count = #reg, get = function(i)
+            local e = reg[i]; local r = rectOf(e.c)
+            return { H.val(plain(e.name)), H.lbl(e.kind), H.lbl(rs(r)), H.lbl(sz(r)), H.lbl((r and r.hidden) and "hidden" or "shown") }
+        end },
+        onRow = function(i) sel[T_UI] = reg[i] end,
+        detail = function()
+            local e = sel[T_UI]; if e == nil then return nil end
+            local r = rectOf(e.c)
+            return { lines = { H.gold(plain(e.name)) .. H.lbl("  " .. e.kind), H.lbl("Position ") .. H.val(rs(r)) .. H.lbl("  size ") .. H.val(sz(r)) },
+                copy = plain(e.name) .. " " .. e.kind .. " pos " .. rs(r) .. " size " .. sz(r) }
+        end,
+    }
+end
+
+-------------------------------------------------------------------------------
+-- 2. Plugin Analyser
+--   Layer: read-only scan of the shared plugin interface layer
+--     (TOPLEVEL_V2__PLUGIN_BUILD_LAYER_TOP), which every plugin's panel is
+--     built on. Type, position, size, visibility and visible text only.
+--   Hooks: opt-in devInfo() from plugins listed in optionalDependencies.
+--   Limits: what the API cannot give at all.
+-------------------------------------------------------------------------------
+local plug = { mode = "layer", wins = {}, at = nil, open = nil, err = nil }
+local TYPE_NAMES = nil
+local function typeName(c)
+    if TYPE_NAMES == nil then
+        TYPE_NAMES = {}
+        pcall(function() for k, v in pairs(ui.ComponentType) do TYPE_NAMES[v] = k end end)
+    end
+    local t = nil
+    pcall(function() t = c.type end)
+    return nice(TYPE_NAMES[t] or (t ~= nil and tostring(t)) or "Component")
+end
+local function textOf(c)
+    local s = nil
+    pcall(function() s = c.content end)
+    if type(s) ~= "string" or s == "" then pcall(function() s = c.label end) end
+    if type(s) ~= "string" then return "" end
+    return untag(s)
+end
+local function children(c)
+    local out = {}
+    for _, m in ipairs({ "IterateStaticComponents", "IterateDynamicComponents" }) do
+        pcall(function()
+            c[m](c, function(k, vis) out[#out + 1] = { c = k, vis = vis } end)
+        end)
+    end
+    return out
+end
+local SCAN_CAP = 1500
+local function plugScan()
+    plug.wins, plug.err = {}, nil
+    local top = helpers.ensureHoverLayer()
+    if top == nil then plug.err = "plugin layer not available"; return end
+    local total = 0
+    local pr = helpers.panelRect()
+    local tops = children(top)
+    if #tops == 0 then plug.err = "the layer returned no components" end
+    for i, k in ipairs(tops) do
+        local w = { idx = i, c = k.c, vis = k.vis, r = rectOf(k.c), type = typeName(k.c), flat = {}, title = "" }
+        local function walk(c, depth)
+            for _, ch in ipairs(children(c)) do
+                if total >= SCAN_CAP then return end
+                total = total + 1
+                local t = textOf(ch.c)
+                w.flat[#w.flat + 1] = { depth = depth, c = ch.c, vis = ch.vis, type = typeName(ch.c), text = t, r = rectOf(ch.c) }
+                if w.title == "" and t ~= "" then w.title = t end
+                if depth < 6 then walk(ch.c, depth + 1) end
+            end
+        end
+        walk(k.c, 1)
+        w.own = pr ~= nil and w.r ~= nil and w.r.x == pr.x and w.r.y == pr.y and w.r.w == pr.w
+        plug.wins[#plug.wins + 1] = w
+    end
+    plug.total = total
+    plug.at = ticks
+end
+-- Opt-in hooks: a plugin listed in optionalDependencies is exposed as a global
+-- named after it ('-' becomes '_'). Only these names are looked at.
+local HOOK_NAMES = { "world_event_timers", "gear_preset_checker", "slayer_task_tracker", "sound_browser", "cursor_sprite" }
+local function hookRows()
+    local rows = {}
+    for _, g in ipairs(HOOK_NAMES) do
+        local mod = rawget(_G, g)
+        if type(mod) ~= "table" or type(mod.devInfo) ~= "function" then
+            rows[#rows + 1] = { H.val(nice(g)), H.lbl("-"), H.lbl("not linked") }
+        else
+            local ok, info = pcall(mod.devInfo)
+            if not ok or type(info) ~= "table" then
+                rows[#rows + 1] = { H.val(nice(g)), H.lbl("devInfo"), H.col(H.C_BAD, "error: " .. untag(info)) }
+            else
+                local keys = {}
+                for k in pairs(info) do keys[#keys + 1] = tostring(k) end
+                table.sort(keys)
+                for _, k in ipairs(keys) do
+                    local v = info[k]
+                    if type(v) == "table" then local n = 0; for _ in pairs(v) do n = n + 1 end; v = "{" .. n .. " entries}" end
+                    rows[#rows + 1] = { H.val(nice(g)), H.lbl(nice(k)), H.lbl(untag(v)) }
+                end
+            end
+        end
+    end
+    return rows
+end
+local LIMITS = {
+    { "Panels of other plugins", "yes, read only", "scan of the shared plugin layer: type, position, size, shown, text" },
+    { "Which plugin owns a panel", "no", "the layer has no owner field; the title text is shown as a guess" },
+    { "Other plugins' settings", "no", "PersistentDB is isolated per plugin" },
+    { "Other plugins' files", "no", "no file API; require only loads this plugin's own files" },
+    { "Other plugins' timings", "no", "no profiler API; only this plugin's own cost is timed" },
+    { "List installed plugins", "no", "no API; the console command plist is for people" },
+    { "Run console commands", "yes, in dev", "ExecuteConsoleCommand (API core; FAQ 3). The Commands tab runs one only when you click Run" },
+    { "Layer ID usage", "yes", "component count on the plugin layer vs the 4096 dynamic ID limit (Diagnostics)" },
+    { "Plugin's own report", "opt in", "a plugin returns devInfo from main.lua and is listed in optionalDependencies" },
+}
+local function viewPlug()
+    if plug.mode == "limits" then
+        local rows = {}
+        for _, l in ipairs(LIMITS) do rows[#rows + 1] = { H.val(l[1]), (l[2] == "no" or l[2] == "not used") and H.col(H.C_WARN, l[2]) or H.col(H.C_GOOD, l[2]), H.lbl(l[3]) } end
+        return { cols = { { title = "What", flex = 2, min = 90 }, { title = "Possible", w = 70 }, { title = "How or why", flex = 3, min = 90 } }, data = arr(rows) }
+    elseif plug.mode == "hooks" then
+        return { cols = { { title = "Plugin", w = 130 }, { title = "Key", w = 100 }, { title = "Value", flex = 1, min = 80 } }, data = arr(hookRows()) }
+    end
+    if plug.at == nil then plugScan() end
+    if plug.open ~= nil then
+        local w = plug.open
+        return {
+            cols = { { title = "Component", w = 110 }, { title = "Text", flex = 2, min = 80 }, { title = "Position", w = 76 }, { title = "Size", w = 70 }, { title = "Shown", w = 46 } },
+            data = { count = #w.flat, get = function(i)
+                local e = w.flat[i]
+                return { H.val(string.rep(". ", e.depth - 1) .. e.type), H.lbl(e.text), H.lbl(rs(e.r)), H.lbl(sz(e.r)), H.lbl(e.vis == false and "no" or "yes") }
+            end },
+            onRow = function(i) sel[T_PLUG] = w.flat[i] end,
+            detail = function()
+                local e = sel[T_PLUG] or w
+                return { lines = { H.gold("Panel " .. w.idx .. ": ") .. H.val(w.title ~= "" and w.title or "(no text)") .. (w.own and H.lbl("  this plugin") or ""),
+                    H.lbl("Selected ") .. H.val(e.type or "-") .. H.lbl("  at ") .. H.val(rs(e.r)) .. H.lbl("  size ") .. H.val(sz(e.r)),
+                    H.lbl(#w.flat .. " components; read only, nothing is changed") },
+                    copy = (e.type or "") .. " pos " .. rs(e.r) .. " size " .. sz(e.r) .. ((e.text and e.text ~= "") and (" text " .. e.text) or "") }
+            end,
+        }
+    end
+    return {
+        cols = { { title = "#", w = 28 }, { title = "Panel (first text)", flex = 2, min = 90 }, { title = "Position", w = 76 }, { title = "Size", w = 70 }, { title = "Parts", w = 44 } },
+        data = { count = #plug.wins, get = function(i)
+            local w = plug.wins[i]
+            local t = w.title ~= "" and w.title or "(no text)"
+            return { H.lbl(w.idx), (w.own and H.gold(t .. " (this)") or H.val(t)), H.lbl(rs(w.r)), H.lbl(sz(w.r)), H.lbl(#w.flat) }
+        end },
+        onRow = function(i) plug.open = plug.wins[i]; sel[T_PLUG] = nil; tbl.page = 1 end,
+        detail = function()
+            return { lines = { H.lbl("Panels on the shared plugin layer: ") .. H.val(#plug.wins) .. H.lbl("  components ") .. H.val(plug.total or 0),
+                plug.err and H.col(H.C_WARN, plug.err) or H.lbl("Click a panel to list its components. Owner names are not exposed.") } }
+        end,
+    }
+end
+
+-------------------------------------------------------------------------------
+-- 3. Event Monitor
+-------------------------------------------------------------------------------
+local evMode = "counts"
+local function viewEvents()
+    local el = secs() - ev.since
+    if evMode == "recent" then
+        return { cols = { { title = "Time s", w = 64 }, { title = "Event", flex = 1, min = 90 }, { title = "Info", flex = 1, min = 70 } },
+            empty = "No events yet",
+            data = { count = #ev.log, get = function(i) local r = ev.log[i]; return { H.lbl(fmt(r.t / 50, 1)), H.val(nice(r.name)), H.lbl(r.info) } end },
+            detail = function()
+                -- 0.2.6: Pause freezes the list; Copy holds the last 20 events as text for bug reports
+                local parts = {}
+                for i = 1, math.min(20, #ev.log) do local r = ev.log[i]; parts[#parts + 1] = fmt(r.t / 50, 1) .. "s " .. r.name .. (r.info ~= "" and (" " .. plain(r.info)) or "") end
+                return { lines = { H.lbl(ev.paused and "Paused: the list is frozen" or "Live") .. H.lbl("  events kept ") .. H.val(#ev.log) .. H.lbl("  Copy holds the last ") .. H.val(math.min(20, #ev.log)) },
+                    copy = #parts > 0 and table.concat(parts, " | ") or nil }
+            end }
+    end
+    local names = {}
+    for _, n in ipairs(EVENTS) do names[#names + 1] = n end
+    table.sort(names, function(a, b) return (ev.counts[a] or 0) > (ev.counts[b] or 0) end)
+    return { cols = { { title = "Event", flex = 1, min = 100 }, { title = "Count", w = 64 }, { title = "Per s", w = 52 }, { title = "Last", w = 70 } },
+        data = { count = #names, get = function(i)
+            local n = names[i]; local c = ev.counts[n] or 0
+            return { H.val(nice(n)), H.lbl(c), H.lbl(fmt(el > 0 and c / el or 0, 1)), H.lbl(ev.last[n] and (fmt((ticks - ev.last[n]) / 50, 1) .. " s") or "never") }
+        end },
+        detail = function()
+            return { lines = { H.lbl(ev.paused and "Paused" or "Counting") .. H.lbl(" for ") .. H.val(fmt(el, 0) .. " s") ..
+                H.lbl("  (key events are counted only, never read)") } }
+        end }
+end
+
+-------------------------------------------------------------------------------
+-- 4. Sprite Browser (from Cursor Sprite, view only: nothing is drawn at the
+--    mouse and no cursor is set). Sprites / Items / Cursors.
+-------------------------------------------------------------------------------
+local SETS = { "sprite", "item", "cursor" }
+local SET_LABEL = { sprite = "Sprites", item = "Items", cursor = "Cursors" }
+local lists = {
+    sprite = { items = {}, next = nil, max = 40000, step = 1500, source = "" },
+    item   = { items = {}, next = nil, max = 65000, step = 800,  source = "" },
+    cursor = { items = {}, next = nil, max = 0,     step = 0,    source = "" },
+}
+local function addE(L, e) e.raw = e.name; e.name = nice(e.name); e.lower = norm(e.raw); L.items[#L.items + 1] = e end
+local function sortL(L) table.sort(L.items, function(a, b) return a.id < b.id end) end
+local browserReady = false
+local function initBrowser()
+    if browserReady then return end
+    browserReady = true
+    local L = lists.sprite
+    pcall(function()
+        for k, v in pairs(id.Sprite) do
+            if type(k) == "string" and type(v) == "number" then addE(L, { id = v, name = k, spr = v }) end
+        end
+    end)
+    if #L.items > 0 then sortL(L); L.source = "id.Sprite table" else L.items = {}; L.next = 0 end
+    lists.item.next = 0
+    local C = lists.cursor
+    pcall(function()
+        for k, v in pairs(id.Cursor) do
+            if type(k) == "string" and type(v) == "number" then
+                local cfg = nil
+                pcall(function() cfg = config.Cursor.FromID(v) end)
+                if cfg ~= nil then
+                    local e = { id = v, name = k }
+                    pcall(function() e.spr = cfg.spriteID; e.hx = cfg.hotspotX; e.hy = cfg.hotspotY end)
+                    if e.spr ~= nil and e.spr >= 0 then addE(C, e) end
+                end
+            end
+        end
+    end)
+    sortL(C); C.source = #C.items > 0 and "id.Cursor table" or "not available"
+end
+local function scanStep(kind)
+    local L = lists[kind]
+    if L.next == nil then return true end
+    local stop = math.min(L.max, L.next + L.step)
+    for i = L.next, stop do
+        local nm = nil
+        if kind == "sprite" then
+            pcall(function() nm = id.Sprite.FromID(i) end)
+            if type(nm) == "string" and nm ~= "" then addE(L, { id = i, name = nm, spr = i }) end
+        else
+            pcall(function() local o = config.Obj.FromID(i); if o ~= nil then nm = o.name end end)
+            if type(nm) == "string" and nm ~= "" and nm ~= "null" then addE(L, { id = i, name = nm }) end
+        end
+    end
+    L.next = stop + 1
+    if L.next > L.max then
+        L.next = nil
+        L.source = #L.items > 0 and (kind == "sprite" and "id.Sprite.FromID scan" or "config.Obj scan") or "not available"
+        return true
+    end
+    return false
+end
+local LETTERS = { "All" }
+for c = string.byte("A"), string.byte("Z") do LETTERS[#LETTERS + 1] = string.char(c) end
+LETTERS[#LETTERS + 1] = "0-9"
+local br = { filtered = {}, letter = 1, q = "", pad = false, padStr = "", lastQ = nil, lastN = -1 }
+local brSearch, brLetter, brSet, brIdField
+local function curList() return lists[state.set] or lists.sprite end
+local function brFilter()
+    local f = {}
+    local q = norm(br.q)
+    for i, e in ipairs(curList().items) do
+        local ok = q == "" or tostring(e.id) == q or string.find(e.lower, q, 1, true) ~= nil
+        if ok and br.letter > 1 then
+            local c = string.upper(string.sub(e.name or "", 1, 1))
+            if LETTERS[br.letter] == "0-9" then ok = not c:match("%a") else ok = c == LETTERS[br.letter] end
+        end
+        if ok then f[#f + 1] = i end
+    end
+    br.filtered = f
+    br.lastN = #curList().items
+end
+local function brEntry(i) local idx = br.filtered[i]; return idx and curList().items[idx] or nil end
+local function brGoId(n)
+    local hit = #br.filtered
+    for i, idx in ipairs(br.filtered) do if curList().items[idx].id >= n then hit = i; break end end
+    if hit < 1 then return end
+    tbl.selected = hit; sel[T_BROWSE] = brEntry(hit)
+    tbl:go(math.ceil(hit / Table.ROWS))
+end
+local function brJump(n)
+    local first = brEntry((tbl.page - 1) * Table.ROWS + 1)
+    brGoId((first and first.id or 0) + n)
+end
+local function objInfo(n)
+    local o, out = nil, {}
+    pcall(function() o = config.Obj.FromID(n) end)
+    if o == nil then return out end
+    local function g(k) local v = nil; pcall(function() v = o[k] end); return v end
+    out.configName = g("configName"); out.members = g("isMembers"); out.trade = g("isTradeable")
+    out.ge = g("isStockmarket"); out.limit = g("stockmarketBuyLimit"); out.cost = g("cost"); out.cat = g("category")
+    return out
+end
+local function viewBrowse()
+    initBrowser()
+    local L = curList()
+    if br.lastN ~= #L.items then brFilter() end
+    local kind = state.set
+    return {
+        icon = true,
+        cols = { { title = "Name", flex = 1, min = 110 }, { title = "ID", w = 64 } },
+        data = { count = #br.filtered, get = function(i)
+            local e = brEntry(i)
+            local cells = { H.val(e.name), H.lbl(e.id) }
+            cells.icon = kind == "item" and { item = true, id = e.id } or { spr = e.spr }
+            return cells
+        end },
+        onRow = function(i) sel[T_BROWSE] = brEntry(i); tbl.selected = i end,
+        detail = function()
+            local e = sel[T_BROWSE]
+            local scan = L.next ~= nil and (" (scanning " .. math.floor(100 * L.next / math.max(1, L.max)) .. "%)") or ""
+            local noun = kind == "item" and "items" or (kind == "cursor" and "cursors" or "sprites")
+            local head = H.lbl("Showing ") .. H.val(commas(#br.filtered)) .. H.lbl(" of ") .. H.val(commas(#L.items)) .. H.lbl(" " .. noun .. scan)
+            if e == nil then return { lines = { head, H.lbl("Click a row to see its ID, name and details.") } } end
+            local lines, copy = { head }, ""
+            if kind == "item" then
+                local o = objInfo(e.id)
+                lines[#lines + 1] = H.gold(e.name) .. H.lbl("  item ") .. H.val(e.id)
+                lines[#lines + 1] = H.lbl("Config name ") .. H.val(nice(o.configName or "-")) .. H.lbl("  members ") .. H.val(tostring(o.members))
+                lines[#lines + 1] = H.lbl("Tradeable ") .. H.val(tostring(o.trade)) .. H.lbl("  GE ") .. H.val(tostring(o.ge)) .. H.lbl("  limit ") .. H.val(tostring(o.limit))
+                lines[#lines + 1] = H.lbl("Value ") .. H.val(tostring(o.cost)) .. H.lbl("  category ") .. H.val(tostring(o.cat))
+                copy = "local s = ui.Sprite.new(parent); s:SetAssociatedObject(" .. e.id .. ")  -- " .. plain(e.name)
+            elseif kind == "cursor" then
+                lines[#lines + 1] = H.gold(e.name) .. H.lbl("  cursor ") .. H.val(e.id)
+                lines[#lines + 1] = H.lbl("Sprite ") .. H.val(tostring(e.spr)) .. H.lbl("  hotspot ") .. H.val(tostring(e.hx) .. ", " .. tostring(e.hy))
+                copy = "id.Cursor." .. plain(e.raw) .. " = " .. e.id .. "  -- sprite " .. tostring(e.spr)
+            else
+                lines[#lines + 1] = H.gold(e.name) .. H.lbl("  sprite ") .. H.val(e.id)
+                lines[#lines + 1] = H.lbl("Draw with ui.Sprite: .sprite = ") .. H.val(e.id)
+                copy = "local s = ui.Sprite.new(parent); s.sprite = " .. e.id .. "  -- " .. plain(e.raw)
+            end
+            return { lines = lines, copy = copy, preview = { item = kind == "item", id = e.id, spr = e.spr } }
+        end,
+    }
+end
+
+-------------------------------------------------------------------------------
+-- 5. Audio (from Sound Browser). Browsing plays on MASTER only; the Bus test
+--    mode plays one sound on the bus you click, to compare MASTER and SFX.
+-------------------------------------------------------------------------------
+-- Buses exposed by audio.AudioBus (developer.runescape.com, Audio page),
+-- read at runtime and ordered by their enum value (MASTER 0, SFX 1, ...).
+CATG.busList = function()
+    local L = {}
+    pcall(function() for k, v in pairs(audio.AudioBus) do if type(k) == "string" and type(v) == "number" then L[#L + 1] = { k = k, v = v } end end end)
+    table.sort(L, function(a, b) return a.v < b.v end)
+    local out = {}
+    for _, b in ipairs(L) do out[#out + 1] = b.k end
+    return out
+end
+CATG.BUS_TIP = {
+    MASTER = "MASTER: the game's master volume only. The most reliable bus for previews.",
+    SFX = "SFX: follows the Sound Effects slider.",
+    MUSIC = "MUSIC: follows the Music slider.",
+    AMBIENT = "AMBIENT: follows the Ambient / background sound slider.",
+    VOICEOVER = "VOICEOVER: follows the Voice over slider.",
+}
+local snd = { all = {}, next = nil, source = "", filtered = {}, q = "", lastQ = nil, lastN = -1, insts = {}, mode = "sounds" }
+local SND_MAX = 62000
+local sndReady = false
+local sndSearch, volBtn
+local function initSounds()
+    if sndReady then return end
+    sndReady = true
+    pcall(function()
+        for k, v in pairs(id.Sound) do
+            if type(k) == "string" and type(v) == "number" then snd.all[#snd.all + 1] = { id = v, raw = k, name = nice(k), lower = norm(k) } end
+        end
+    end)
+    if #snd.all > 0 then table.sort(snd.all, function(a, b) return a.id < b.id end); snd.source = "id.Sound table"
+    else snd.all = {}; snd.next = 1; snd.source = "scanning" end
+end
+local function sndScan()
+    if snd.next == nil then return end
+    local stop = math.min(SND_MAX, snd.next + 1500)
+    for i = snd.next, stop do
+        local nm = nil
+        pcall(function() nm = id.Sound.FromID(i) end)
+        if type(nm) == "string" and nm ~= "" then snd.all[#snd.all + 1] = { id = i, raw = nm, name = nice(nm), lower = norm(nm) } end
+    end
+    snd.next = stop + 1
+    if snd.next > SND_MAX then snd.next = nil; snd.source = #snd.all > 0 and "id.Sound.FromID scan" or "not available" end
+end
+local function sndFilter()
+    local f, q = {}, norm(snd.q)
+    for i, s in ipairs(snd.all) do
+        if q == "" or tostring(s.id) == q or string.find(s.lower, q, 1, true) then f[#f + 1] = i end
+    end
+    snd.filtered, snd.lastN = f, #snd.all
+end
+-- Playback ported verbatim from Sound Browser 0.1.13 (play / toggle / sweep /
+-- stopAll). 0.2.0 played nothing in Dylan's test. Differences from Sound
+-- Browser: it called audio.StopSoundsUsingResource(sid) right before
+-- audio.Play(sid) on every click (the likely cause: the stop can cancel the
+-- sound queued in the same frame), defaulted to 50% volume instead of 100%,
+-- and dropped instances in the view instead of sweeping them in the tick.
+local function isPlaying(inst)
+    local v = false
+    pcall(function() v = inst.isPlaying == true end)
+    return v
+end
+snd.played, snd.results = {}, {}
+local function sndPlay(sid, bus)
+    local r = "err"
+    pcall(function()
+        local p = audio.SoundPlaybackParams.new()
+        p.type = audio.SoundType.SCRIPT
+        p.audioBus = audio.AudioBus[bus or state.bus] or audio.AudioBus.MASTER
+        p.volume = 1.0   -- below 1.0 the client plays nothing (FAQ 28)
+        p.numLoops = 0
+        p.delayTick = 0
+        p.emitterShape = audio.EmitterShape.NONE
+        local inst = audio.Play(sid, p)
+        snd.insts[sid] = inst
+        r = inst ~= nil and "playing" or "nil"
+    end)
+    snd.results[sid] = r
+    snd.played[sid] = true
+    snd.result = r == "playing" and "playing" or ("audio.Play: " .. r)
+end
+local function sndToggle(sid)
+    local inst = snd.insts[sid]
+    if inst ~= nil and isPlaying(inst) then
+        pcall(function() inst:Stop() end)
+        snd.insts[sid] = nil
+        snd.results[sid] = "stopped"
+    else
+        sndPlay(sid)
+    end
+end
+local function sndSweep()
+    local changed = false
+    for sid, inst in pairs(snd.insts) do
+        if not isPlaying(inst) then
+            snd.insts[sid] = nil
+            if snd.results[sid] == "playing" then snd.results[sid] = "done" end
+            changed = true
+        end
+    end
+    return changed
+end
+local function sndStopAll()
+    for sid, _ in pairs(snd.played) do
+        pcall(function() audio.StopSoundsUsingResource(sid) end)
+    end
+    for sid, inst in pairs(snd.insts) do
+        pcall(function() inst:Stop() end)
+        snd.results[sid] = "stopped"
+    end
+    snd.insts = {}
+    snd.played = {}
+end
+local VOL_OPTS = { "VolumeMaster", "VolumeMainEffects", "VolumeBackgroundEffects", "VolumeMainMusic", "VolumeSpeech", "VolumeLoginMusic" }
+local viewBusTest
+local function viewAudio()
+    initSounds()
+    if snd.mode == "bus" then return viewBusTest() end
+    local playing = 0
+    for _ in pairs(snd.insts) do playing = playing + 1 end
+    local head = H.lbl("Bus ") .. H.gold(state.bus) .. H.lbl("  volume ") .. H.val("100%") ..
+        H.lbl("  playing ") .. H.val(playing)
+    if snd.mode == "volumes" then
+        local rows = {}
+        for _, o in ipairs(VOL_OPTS) do
+            local v, mx = nil, nil
+            pcall(function() local op = game.options[o]; v, mx = op.setting, op.max end)
+            rows[#rows + 1] = { H.val(nice(o)), H.lbl(tostring(v or "-")), H.lbl(tostring(mx or "-")) }
+        end
+        local buses = {}
+        pcall(function() for k in pairs(audio.AudioBus) do if type(k) == "string" then buses[#buses + 1] = nice(k) end end end)
+        table.sort(buses)
+        rows[#rows + 1] = { H.val("Buses in the API"), H.lbl(#buses > 0 and table.concat(buses, ", ") or "not listed"), H.lbl("playing on: " .. state.bus) }
+        return { cols = { { title = "Client option (read only)", flex = 1, min = 120 }, { title = "Value", w = 70 }, { title = "Max", flex = 1, min = 50 } },
+            data = arr(rows), detail = function() return { lines = { head, H.lbl("Output levels cannot be metered by plugins.") } } end }
+    end
+    if snd.lastN ~= #snd.all then sndFilter() end
+    return {
+        cols = { { title = "ID", w = 60 }, { title = "Sound", flex = 1, min = 100 }, { title = "State", w = 60 } },
+        data = { count = #snd.filtered, get = function(i)
+            local s = snd.all[snd.filtered[i]]
+            local on = snd.insts[s.id] ~= nil
+            local r = snd.results[s.id]
+            return { H.lbl(s.id), on and H.gold(s.name) or H.val(s.name), on and H.col(H.C_GOOD, "playing") or ((r == "nil" or r == "err") and H.col(H.C_BAD, r) or H.lbl(r or "-")) }
+        end },
+        onRow = function(i) local s = snd.all[snd.filtered[i]]; if s then sel[T_AUDIO] = s; tbl.selected = i; sndToggle(s.id) end end,
+        detail = function()
+            local s = sel[T_AUDIO]
+            local scan = snd.next ~= nil and ("  scanning " .. math.floor(100 * snd.next / SND_MAX) .. "%") or ""
+            local lines = { head, H.lbl("Sounds ") .. H.val(commas(#snd.all)) .. H.lbl("  shown ") .. H.val(commas(#snd.filtered)) .. H.lbl("  from " .. snd.source .. scan) }
+            if s == nil then lines[#lines + 1] = H.lbl("Click a row to play it; click again to stop.") return { lines = lines } end
+            lines[#lines + 1] = H.gold(s.name) .. H.lbl("  id ") .. H.val(s.id)
+            return { lines = lines, copy = "local p = audio.SoundPlaybackParams.new(); p.audioBus = audio.AudioBus." .. state.bus .. "; audio.Play(" .. s.id .. ", p)  -- " .. plain(s.raw) }
+        end,
+    }
+end
+
+-------------------------------------------------------------------------------
+-- 6. Settings (this plugin's PersistentDB entries and client options)
+-------------------------------------------------------------------------------
+local OPTIONS = { "AmbientOcclusion", "AnimationQuality", "AnisotropicFiltering", "AntialiasingMode",
+    "AntialiasingQuality", "Bloom", "CanopyCutout", "CustomPlayerModelCount", "DOF", "DrawDistance",
+    "EntityHighlights", "GameRenderScale", "GroundBlending", "GroundDecor", "LightingQuality",
+    "ParticleQuality", "Reflections", "ShadowQuality", "Shadows", "SmoothClipFade", "Texturing",
+    "MaxBackgroundFps", "MaxForegroundFps", "VolumetricLighting", "VSync", "VolumeBackgroundEffects",
+    "VolumeLoginMusic", "VolumeMainEffects", "VolumeMainMusic", "VolumeMaster", "VolumeSpeech",
+    "RemoveRoof", "CursorScale", "CutsceneSubtitles", "Language", "InterfaceScale", "Brightness",
+    "ConsoleKey", "CustomCursors", "DeviceCapOverrides", "Diagnostics", "RichPresence", "HapticFeedback" }
+local setField
+local setMode = "plugin"
+local function short(v, depth)
+    depth = depth or 0
+    if type(v) == "table" then
+        if depth > 0 then local n = 0; for _ in pairs(v) do n = n + 1 end; return "{" .. n .. "}" end
+        local parts, keys = {}, {}
+        for k in pairs(v) do keys[#keys + 1] = k end
+        table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
+        for i, k in ipairs(keys) do if i <= 8 then parts[#parts + 1] = tostring(k) .. "=" .. short(v[k], 1) end end
+        return "{" .. table.concat(parts, ", ") .. (#keys > 8 and ", ..." or "") .. "}"
+    end
+    return plain(tostring(v))
+end
+local function viewSettings()
+    local q = norm(readField(setField, 48))
+    local function want(s) return q == "" or string.find(norm(s), q, 1, true) ~= nil end
+    if setMode == "plugin" then
+        local rows = {}
+        pcall(function() PersistentDB:IterateEntries(function(k, v)
+            if want(tostring(k)) then rows[#rows + 1] = { H.val(nice(k)), H.lbl(type(v)), H.lbl(short(v)), full = short(v) } end
+            return false
+        end) end)
+        table.sort(rows, function(a, b) return a[1] < b[1] end)
+        return { cols = { { title = "Key", w = 120 }, { title = "Type", w = 54 }, { title = "Value", flex = 1, min = 80 } }, data = arr(rows),
+            onRow = function(i) sel[T_SET] = rows[i] end,
+            detail = function()
+                local r = sel[T_SET]
+                return { lines = { H.lbl("This plugin's saved data. Other plugins' data is isolated and cannot be read.") }, copy = r and untag(r[1]) .. " = " .. r.full or nil }
+            end }
+    end
+    local rows = {}
+    for _, o in ipairs(OPTIONS) do
+        if want(o) then
+            local v, lbl, mn, mx = nil, nil, nil, nil
+            pcall(function()
+                local op = game.options[o]
+                v, mn, mx = op.setting, op.min, op.max
+                if op.hasLabels then lbl = op:GetLabel(v) end
+            end)
+            rows[#rows + 1] = { H.val(o), H.lbl(tostring(v or "n/a")), H.lbl(plain(lbl or "")), H.lbl((mn and mx) and (mn .. " to " .. mx) or "-") }
+        end
+    end
+    return { cols = { { title = "Client option (read only)", flex = 2, min = 110 }, { title = "Value", w = 54 }, { title = "Label", flex = 1, min = 50 }, { title = "Range", w = 70 } },
+        data = arr(rows),
+        onRow = function(i) sel[T_SET] = rows[i] end,
+        detail = function() local r = sel[T_SET]; return r and { lines = { H.lbl("game.options is read, never set.") }, copy = "game.options." .. untag(r[1]) .. ".setting  -- " .. untag(r[2]) } or nil end }
+end
+
+-------------------------------------------------------------------------------
+-- 7. Perf Meter
+-------------------------------------------------------------------------------
+local function viewPerf()
+    local f = perf.frames
+    local n, sum, mn, mx = 0, 0, nil, nil
+    for i = math.max(1, #f - 59), #f do
+        local d = f[i]; n = n + 1; sum = sum + d
+        mn = (mn == nil or d < mn) and d or mn
+        mx = (mx == nil or d > mx) and d or mx
+    end
+    local avg = n > 0 and sum / n or nil
+    local worst = nil
+    for _, d in ipairs(f) do if worst == nil or d > worst then worst = d end end
+    local g, gs = perf.srvGaps, 0
+    for _, d in ipairs(g) do gs = gs + d end
+    local rows = {
+        { H.val("FPS"), H.lbl(avg and fmt(1 / avg, 1) or "waiting for Draw"), H.lbl("last 60 frames") },
+        { H.val("Frame time avg"), H.lbl(avg and (fmt(avg * 1000, 2) .. " ms") or "-"), H.lbl("Draw.timeDeltaSecs") },
+        { H.val("Frame time min"), H.lbl(mn and (fmt(mn * 1000, 2) .. " ms") or "-"), H.lbl("") },
+        { H.val("Frame time max"), H.lbl(mx and (fmt(mx * 1000, 2) .. " ms") or "-"), H.lbl("") },
+        { H.val("Worst frame"), H.lbl(worst and (fmt(worst * 1000, 1) .. " ms") or "-"), H.lbl("last " .. #f .. " frames") },
+        { H.val("Logic ticks per second"), H.lbl(perf.logicRate and fmt(perf.logicRate, 1) or "-"), H.lbl("client target 50") },
+        { H.val("Server tick interval"), H.lbl(#g > 0 and (fmt(gs / #g * 1000, 0) .. " ms") or "-"), H.lbl("game target 600") },
+    }
+    if perf.hasClock then
+        local c, cs, cm = perf.cost, 0, 0
+        for _, d in ipairs(c) do cs = cs + d; if d > cm then cm = d end end
+        rows[#rows + 1] = { H.val("This plugin's refresh cost"), H.lbl(#c > 0 and (fmt(cs / #c * 1000, 2) .. " ms avg") or "-"), H.lbl(#c > 0 and (fmt(cm * 1000, 2) .. " ms max") or "") }
+    else
+        rows[#rows + 1] = { H.val("This plugin's refresh cost"), H.lbl("not measurable"), H.lbl("os.clock not available") }
+    end
+    rows[#rows + 1] = { H.val("Components in this plugin"), H.lbl(#reg), H.lbl("") }
+    -- 0.2.6: live count on the shared plugin layer against the 4096 dynamic-ID
+    -- limit (FAQ 13), warning from 80%.
+    do
+        local _, total = CATG.layerCount()
+        local LIMIT = 4096
+        if total then
+            local pct = math.floor(total * 100 / LIMIT)
+            local warn = total >= LIMIT * 0.8
+            rows[#rows + 1] = { H.val("Plugin layer components"), warn and H.col(H.C_WARN, commas(total) .. " / 4,096") or H.lbl(commas(total) .. " / 4,096"),
+                warn and H.col(H.C_WARN, pct .. "%: near the limit") or H.lbl(pct .. "% of the limit"),
+                tip = "Components on the shared plugin layer (all plugins), counted to 8 levels deep. The client refuses new layers past 4096 dynamic IDs (FAQ 13). Amber from 80%." }
+        else
+            rows[#rows + 1] = { H.val("Plugin layer components"), H.lbl("not readable"), H.lbl("layer not found") }
+        end
+    end
+    rows[#rows + 1] = { H.val("Other plugins"), H.lbl("not timed"), H.lbl("no profiler API") }
+    return { cols = { { title = "Metric", flex = 2, min = 100 }, { title = "Value", w = 110 }, { title = "Note", flex = 1, min = 60 } }, data = arr(rows) }
+end
+
+-------------------------------------------------------------------------------
+-- 8. Layout Grid (inside this panel's preview area)
+-------------------------------------------------------------------------------
+local STEPS = { 8, 10, 16, 20, 24, 32 }
+local GRID_H = 140
+local MAXV, MAXH = 60, 20
+local gridRect = nil
+local function placeGrid(y)
+    local step = STEPS[state.gridStep] or 16
+    local w = areaW()
+    local show = state.tab == T_GRID and y ~= nil
+    helpers.safe(function() preview.gridBg.hidden = not show; if show then preview.gridBg:SetPos(H.PAD, y); preview.gridBg:SetSize(w, GRID_H) end end)
+    for i = 1, MAXV do
+        local x = i * step
+        local vis = show and x < w
+        helpers.safe(function() local l = preview.gv[i]; l.hidden = not vis; if vis then l:SetPos(H.PAD + x, y); l:SetSize(1, GRID_H) end end)
+    end
+    for i = 1, MAXH do
+        local yy = i * step
+        local vis = show and yy < GRID_H
+        helpers.safe(function() local l = preview.gh[i]; l.hidden = not vis; if vis then l:SetPos(H.PAD, y + yy); l:SetSize(w, 1) end end)
+    end
+    if not show then helpers.safe(function() preview.dot.hidden = true end) end
+    gridRect = show and { y = y, w = w } or nil
+end
+local function viewGrid()
+    local step = STEPS[state.gridStep] or 16
+    local rows = { kv("Spacing", step .. " UI units"), kv("Area", (gridRect and gridRect.w or 0) .. " x " .. GRID_H) }
+    local ux, uy = helpers.mouseUI()
+    local pr = helpers.panelRect()
+    local cross = false
+    if ux and pr and gridRect then
+        local rx, ry = ux - pr.x - H.PAD, uy - pr.y - gridRect.y
+        if rx >= 0 and ry >= 0 and rx <= gridRect.w and ry <= GRID_H then
+            cross = true
+            local sx, sy = math.floor(rx / step + 0.5) * step, math.floor(ry / step + 0.5) * step
+            rows[#rows + 1] = kv("Mouse in grid", math.floor(rx) .. ", " .. math.floor(ry))
+            rows[#rows + 1] = kv("Snapped", sx .. ", " .. sy)
+            helpers.safe(function() preview.dot.hidden = false; preview.dot:SetPos(H.PAD + sx - 2, gridRect.y + sy - 2) end)
+        end
+    end
+    if not cross then
+        helpers.safe(function() preview.dot.hidden = true end)
+        rows[#rows + 1] = kv("Mouse in grid", "move the mouse over the grid")
+    end
+    if ux and pr then rows[#rows + 1] = kv("Mouse in panel", math.floor(ux - pr.x) .. ", " .. math.floor(uy - pr.y)) end
+    rows[#rows + 1] = kv("Note", "the grid draws inside this panel only")
+    return { cols = { { title = "Property", w = 130 }, { title = "Value", flex = 1, min = 80 } }, data = arr(rows) }
+end
+
+-------------------------------------------------------------------------------
+-- 9. Text Fit
+-------------------------------------------------------------------------------
+local FIT_WS = { 60, 100, 140, 200, 260, 320 }
+local fonts = nil
+local fitField, fitWBtn
+local function loadFonts()
+    if fonts ~= nil then return end
+    fonts = {}
+    pcall(function()
+        for k, v in pairs(id.Font) do
+            if type(k) == "string" and type(v) == "number" then fonts[#fonts + 1] = { name = k, id = v } end
+        end
+    end)
+    table.sort(fonts, function(a, b) return a.name < b.name end)
+    if #fonts == 0 then fonts[1] = { name = "panel font", id = H.FONT } end
+    if state.fontIdx > #fonts then state.fontIdx = 1 end
+end
+local function curFont() loadFonts(); return fonts[state.fontIdx] end
+local function fitStr()
+    local t = readField(fitField, 120)
+    if t == "" then t = "The quick brown fox jumps over the lazy dog" end
+    return t
+end
+local function placeFit(y)
+    local show = state.tab == T_FIT and y ~= nil
+    helpers.safe(function() preview.fitBg.hidden = not show; preview.fitT.hidden = not show end)
+    if not show then return end
+    local w = math.min(FIT_WS[state.fitW] or 140, areaW())
+    local f = curFont()
+    helpers.safe(function()
+        preview.fitBg:SetPos(H.PAD, y); preview.fitBg:SetSize(w, H.ROW_HEIGHT + 4)
+        preview.fitT.font = f.id
+        preview.fitT:SetPos(H.PAD + 2, y + 2); preview.fitT:SetSize(w - 4, H.ROW_HEIGHT)
+        preview.fitT.content = H.val(helpers.fitText(fitStr(), f.id, w - 4))
+    end)
+end
+local function viewFit()
+    local f = curFont()
+    local t = fitStr()
+    local boxW = math.min(FIT_WS[state.fitW] or 140, areaW())
+    local full = helpers.textWidthOf(f.id, t)
+    local fits = full ~= nil and full <= boxW - 4
+    local rows = {}
+    -- every font against this box: a table of results
+    loadFonts()
+    for i, fo in ipairs(fonts) do
+        local wv = helpers.textWidthOf(fo.id, t)
+        local ok = wv ~= nil and wv <= boxW - 4
+        rows[#rows + 1] = { (i == state.fontIdx and H.gold or H.val)(nice(fo.name)), H.lbl(fo.id), H.lbl(wv and math.floor(wv) or "n/a"),
+            wv == nil and H.lbl("-") or (ok and H.col(H.C_GOOD, "fits") or H.col(H.C_WARN, "ellipsis")), idx = i }
+    end
+    return { cols = { { title = "Font", flex = 1, min = 100 }, { title = "ID", w = 44 }, { title = "Width", w = 54 }, { title = "Box " .. (boxW - 4), w = 70 } },
+        data = arr(rows),
+        onRow = function(i) state.fontIdx = rows[i].idx; save(); layout() end,
+        detail = function()
+            return { lines = { H.lbl("Selected font ") .. H.val(nice(f.name)) .. H.lbl("  width ") .. H.val(full and math.floor(full) or "n/a") .. H.lbl("  chars ") .. H.val(#t),
+                H.lbl("Fits: ") .. (fits and H.col(H.C_GOOD, "yes") or H.col(H.C_WARN, "no, shortened with an ellipsis")) .. H.lbl("  (widths from GetStringWidth)") },
+                copy = "config.Font.FromID(" .. f.id .. "):GetStringWidth(text)  -- " .. (full and math.floor(full) or "n/a") }
+        end }
+end
+
+-------------------------------------------------------------------------------
+-- 10. Reload Helper (shows commands to copy; the Commands tab can run them)
+-------------------------------------------------------------------------------
+local slugField = nil
+local function cleanSlug(s)
+    local t = string.lower(helpers.cleanText(s, 48)):gsub("[%s_]+", "-"):gsub("[^a-z0-9%-]", "")
+    return t ~= "" and t or SLUG
+end
+local function viewReload()
+    local s = cleanSlug(readField(slugField, 48))
+    local rows = {
+        { H.val("prf"), H.lbl("refresh the plugin list (after adding a folder)"), cmd = "prf" },
+        { H.val("plist"), H.lbl("list plugins and their state"), cmd = "plist" },
+        { H.val("pon " .. s), H.lbl("first load / turn on"), cmd = "pon " .. s },
+        { H.val("prl " .. s), H.lbl("reload after editing files"), cmd = "prl " .. s },
+        { H.val("poff " .. s), H.lbl("turn off"), cmd = "poff " .. s },
+        { H.val("ppr " .. s), H.lbl("set up permissions in dev, then ppe (FAQ 2)"), cmd = "ppr " .. s },
+        { H.val("ppe " .. s .. " httpAccess"), H.lbl("grant a permission in dev, then prl (FAQ 2)"), cmd = "ppe " .. s .. " httpAccess" },
+        { H.val("displayfps"), H.lbl("FPS readout for performance tests (FAQ 6, 37)"), cmd = "displayfps" },
+        { H.val("prf after plugin.json edits"), H.lbl("manifest changes need prf or a client restart (FAQ 4)"), cmd = "prf" },
+        { H.val("double-click checkbox"), H.lbl("in the plugin menu also reloads (FAQ 6)"), cmd = "prl " .. s },
+        { H.val("dev re-enable"), H.lbl("dev plugins do not re-enable on login; only mod.io installs do (FAQ 11)"), cmd = "pon " .. s },
+    }
+    return { cols = { { title = "Command", w = 150 }, { title = "What it does", flex = 1, min = 80 } }, data = arr(rows),
+        onRow = function(i) sel[T_RELOAD] = rows[i]; tbl.selected = i end,
+        detail = function()
+            local r = sel[T_RELOAD]
+            return { lines = { H.lbl("Open the console (Alt and backtick), type or paste the command; Up arrow recalls the last one. The Commands tab can run them for you."),
+                H.lbl("This plugin: ") .. H.val(PLUGIN_NAME .. " " .. H.VERSION) .. H.lbl("  loaded ") .. H.val(fmt(secs(), 0) .. " s ago") },
+                copy = r and r.cmd or ("pon " .. s) }
+        end }
+end
+
+-------------------------------------------------------------------------------
+-- 11. Help/FAQ: only entries from faq_data.lua (generated from the Discord
+--     research file by release/build_faq.py). Nothing is invented here.
+-------------------------------------------------------------------------------
+local faqField = nil
+local function viewFaq()
+    local q = norm(readField(faqField, 64))
+    local rows = {}
+    for _, e in ipairs(FAQ) do
+        if type(e) == "table" and (q == "" or string.find(norm(e.q), q, 1, true) or string.find(norm(e.a), q, 1, true)) then
+            rows[#rows + 1] = { H.lbl(e.n or ""), H.val(plain(e.q)), H.lbl(plain(e.a)), e = e }
+        end
+    end
+    return { cols = { { title = "#", w = 28 }, { title = "Question", flex = 1, min = 90 }, { title = "Solution", flex = 2, min = 100 } }, data = arr(rows),
+        onRow = function(i)
+            sel[T_FAQ] = rows[i].e; tbl.selected = i
+            local list = {}
+            for k, r in ipairs(rows) do list[k] = r.e end
+            local ok = FaqDialog.open(list, i)
+            if not ok then logError("Help dialog", "could not open the answer window") end
+        end,
+        detail = function()
+            if #FAQ == 0 then return { lines = { H.col(H.C_WARN, "No FAQ entries yet: the Discord research file has not been added to this build.") } } end
+            local e = sel[T_FAQ]
+            if e == nil then return { lines = { H.lbl(#FAQ .. " entries from the plugin developer Discord research (Oct 19-22, 2026). Click a row to open the full answer.") } } end
+            local w = areaW() - 8
+            local lines = {}
+            for _, l in ipairs(wrap("Q" .. (e.n or "") .. ": " .. plain(e.q), w, 2)) do lines[#lines + 1] = H.gold(l) end
+            for _, l in ipairs(wrap("A: " .. plain(e.a), w, DETAIL_N - 1 - #lines)) do lines[#lines + 1] = H.val(l) end
+            lines[#lines + 1] = H.lbl(plain(e.section or "") .. "  |  " .. plain(e.freq or "")) .. H.lbl("  (full answer in the copy field)")
+            return { lines = lines, copy = plain(e.a) }
+        end }
+end
+
+-- Audio bus test: one click plays the selected sound (or the first in the
+-- list) once on that bus; the table shows what audio.Play returned and
+-- whether the instance reports isPlaying. Audibility is for your ears.
+local busRes = {}
+viewBusTest = function()
+    local buses = {}
+    pcall(function() for k, v in pairs(audio.AudioBus) do if type(k) == "string" then buses[#buses + 1] = k end end end)
+    table.sort(buses, function(a, b) if a == "MASTER" then return true elseif b == "MASTER" then return false end return a < b end)
+    local s = sel[T_AUDIO] or snd.all[1]
+    local rows = {}
+    for _, b in ipairs(buses) do
+        local r = busRes[b]
+        local st = "-"
+        if r then st = r.inst and (isPlaying(r.inst) and "playing" or "finished") or "Play returned nil" end
+        rows[#rows + 1] = { H.val(nice(b)), H.lbl(r and r.sid or "-"), H.lbl(r and (r.inst and "instance" or "nil") or "not tried"), st == "playing" and H.col(H.C_GOOD, st) or H.lbl(st), bus = b }
+    end
+    return { cols = { { title = "Bus", flex = 1, min = 80 }, { title = "Sound", w = 60 }, { title = "Play result", w = 90 }, { title = "isPlaying", w = 90 } },
+        data = arr(rows),
+        onRow = function(i)
+            local b = rows[i].bus
+            if s == nil then return end
+            pcall(function() if snd.insts[s.id] then snd.insts[s.id]:Stop() end end); snd.insts[s.id] = nil; sndPlay(s.id, b)
+            busRes[b] = { sid = s.id, inst = snd.insts[s.id] }
+        end,
+        detail = function()
+            return { lines = { H.lbl("Test sound: ") .. H.val(s and (s.name .. " (" .. s.id .. ")") or "none loaded") .. H.lbl("  pick one in Sounds mode"),
+                H.lbl("Click a bus to play it once. A returned instance does not prove it is audible: listen."),
+                H.lbl("Sounds mode plays on the bus chosen with the Bus button (now " .. state.bus .. ").") } }
+        end }
+end
+
+-------------------------------------------------------------------------------
+-- 12. Diagnostics: live checks for problems plugin developers report.
+--     Each row is a real test run in this client right now.
+-------------------------------------------------------------------------------
+local diag = { rows = nil, dbTest = nil }
+-- Layer / component leak detector (FAQ 13: "Failed to Create Layer ... invalid
+-- dynamic ID, expected a value between 0 and 4096"). Counts what is on the
+-- shared plugin layer now, against the first count taken this session.
+local leak = { base = nil, last = nil, peak = 0 }
+CATG.layerCount = function()
+    local top = helpers.ensureHoverLayer()
+    if top == nil then return nil end
+    local direct, total = 0, 0
+    local function walk(c, d)
+        for _, ch in ipairs(children(c)) do
+            if total >= 6000 then return end
+            total = total + 1
+            if d == 1 then direct = direct + 1 end
+            if d < 8 then walk(ch.c, d + 1) end
+        end
+    end
+    walk(top, 1)
+    return direct, total
+end
+local function leakCheck()
+    local d, t = CATG.layerCount()
+    if d == nil then return end
+    leak.last = { d = d, t = t }
+    if leak.base == nil then leak.base = { d = d, t = t } end
+    if t > leak.peak then leak.peak = t end
+end
+local function yes(b, good, bad) return b and H.col(H.C_GOOD, good or "yes") or H.col(H.C_WARN, bad or "no") end
+-- expected "off" states (e.g. a permission not granted) are neutral grey, not amber
+local function neutral(b, good, bad) return b and H.col(H.C_GOOD, good or "yes") or H.col(H.C_LABEL, bad or "no") end
+local function diagRun()
+    local rows = {}
+    local function add(area, check, result, how) rows[#rows + 1] = { H.val(area), H.lbl(check), result, H.lbl(how or "") } end
+    -- permissions
+    for _, p in ipairs({ "httpAccess", "chatAccess", "trackingAccess" }) do
+        local ok, v = pcall(function() return Plugin.HasPermission(PluginPermissions[p]) end)
+        add("Permission", p, ok and neutral(v == true, "granted", "not granted") or H.col(H.C_BAD, "error"), "Plugin.HasPermission")
+    end
+    -- resources
+    local nres = 0
+    pcall(function()
+        for k, r in pairs(Plugin.resources) do
+            nres = nres + 1
+            local loaded, inUse = nil, nil
+            pcall(function() loaded = r.loaded; inUse = r.inUse end)
+            add("Resource", tostring(k), yes(loaded == true, "loaded", "not loaded"), "in use " .. tostring(inUse))
+        end
+    end)
+    if nres == 0 then add("Resource", "Plugin.resources", H.col(H.C_WARN, "none found"), "files go in resources/") end
+    local nurl = 0
+    pcall(function() for _ in pairs(Plugin.urls) do nurl = nurl + 1 end end)
+    add("Manifest", "urls", H.lbl(nurl), "Plugin.urls (needs httpAccess to use)")
+    add("Manifest", "plugin.json", H.lbl("not readable"), "no file API; run release/validate_plugin_json.py")
+    -- events
+    local nsub, nfail = 0, 0
+    for _, n in ipairs(EVENTS) do if subs[n] then nsub = nsub + 1 elseif subs[n] == false then nfail = nfail + 1 end end
+    add("Events", "subscribed", yes(nfail == 0, nsub .. " ok", nsub .. " ok, " .. nfail .. " failed"), "see Error Log for failures")
+    add("Events", "Draw firing", yes((ev.counts.Draw or 0) > 0), "frame events")
+    add("Events", "ServerLogic firing", yes((ev.counts.ServerLogic or 0) > 0), "needs to be logged in")
+    -- core API
+    local mouse = false
+    pcall(function() mouse = Mouse.IsAvailable() == true end)
+    add("Mouse", "IsAvailable", yes(mouse), "false while the game window is unfocused")
+    add("Lua", "os.clock", yes(perf.hasClock, "available", "missing"), "for timing")
+    add("Lua", "debug.traceback", yes(hasTrace, "available", "missing"), "stack traces in the Error Log")
+    add("Lua", "io library", neutral(type(rawget(_G, "io")) == "table", "present", "not present"), "plugins are sandboxed")
+    add("Lua", "require", yes(type(require) == "function", "available", "missing"), "loads this plugin's own .lua files")
+    add("UI", "plugin layer", yes(helpers.ensureHoverLayer() ~= nil, "reachable", "missing"), "TOPLEVEL_V2__PLUGIN_BUILD_LAYER_TOP")
+    local fw = helpers.textWidthOf(H.FONT, "Test")
+    add("UI", "text width", yes(fw ~= nil, math.floor(fw or 0) .. " px", "not measurable"), "Font:GetStringWidth")
+    local spr = 0
+    pcall(function() for _ in pairs(id.Sprite) do spr = spr + 1 end end)
+    add("IDs", "id.Sprite table", yes(spr > 0, commas(spr) .. " names", "empty"), "otherwise FromID scan")
+    local obj = nil
+    pcall(function() obj = config.Obj.FromID(1).name end)
+    add("Config", "config.Obj.FromID(1)", yes(obj ~= nil, plain(obj or ""), "nil"), "item lookups")
+    local opt = nil
+    pcall(function() opt = game.options.VolumeMaster.setting end)
+    add("Options", "game.options read", yes(opt ~= nil, tostring(opt), "nil"), "read only")
+    add("Storage", "PersistentDB round trip", diag.dbTest or H.lbl("click to run"), "writes key rdt_selftest in this plugin")
+    -- layer leak detector (FAQ 13)
+    leakCheck()
+    if leak.last then
+        local L, B = leak.last, leak.base
+        add("Layer IDs", "panels on plugin layer", H.lbl(L.d), "direct children, all plugins")
+        add("Layer IDs", "components on plugin layer", yes(L.t < 3500, L.t .. " of 4096", L.t .. " of 4096, near the limit"), "dynamic ID limit (FAQ 13)")
+        local grow = L.t - B.t
+        add("Layer IDs", "growth this session", yes(grow <= 50, (grow >= 0 and "+" or "") .. grow, "+" .. grow .. ", possible leak"), "rising after each prl = components not destroyed")
+        add("Layer IDs", "this plugin's components", H.lbl(#reg), "destroyed in PluginShutdown")
+    else
+        add("Layer IDs", "plugin layer", H.col(H.C_WARN, "not readable"), "")
+    end
+    add("Cleanup", "PluginShutdown defined", yes(type(rawget(_G, "PluginShutdown")) == "function", "yes", "missing"), "needed to destroy library-made UI (FAQ 7, 13)")
+    -- high-DPI drag test (FAQ 15)
+    local px, ux = nil, nil
+    pcall(function() if Mouse.IsAvailable() then px = Mouse.GetPosition().x end end)
+    ux = helpers.mouseUI()
+    if px and ux and ux > 0 then
+        local r = px / ux
+        add("High DPI", "window px per UI unit", yes(math.abs(r - 1) < 0.05, fmt(r, 2), fmt(r, 2) .. ", scale drag deltas"), "raw coords not 1:1 on 2K/4K (FAQ 15)")
+    else
+        add("High DPI", "window px per UI unit", H.lbl("move the mouse over the game"), "FAQ 15")
+    end
+    add("Lua", "os library", yes(type(rawget(_G, "os")) == "table", "present", "missing, use Logic ticks"), "FAQ 22")
+    add("Manifest", "requiredPermissions", H.lbl("use optionalPermissions"), "required does not work yet (FAQ 1)")
+    add("Known issues", "Discord FAQ checks", #FAQ > 0 and H.lbl(#FAQ .. " FAQ entries") or H.col(H.C_WARN, "FAQ file not in build"), "see Help/FAQ")
+    diag.rows = rows
+end
+local function dbRoundTrip()
+    local ok = pcall(function()
+        local v = tostring(ticks)
+        PersistentDB:SetStructuredData("rdt_selftest", { v = v })
+        local back = PersistentDB:GetStructuredData("rdt_selftest")
+        if type(back) ~= "table" or back.v ~= v then error("read back differed") end
+    end)
+    diag.dbTest = yes(ok, "passed", "failed")
+end
+local function viewDiag()
+    if diag.rows == nil then diagRun() end
+    local rows = diag.rows
+    return { cols = { { title = "Area", w = 72 }, { title = "Check", flex = 1, min = 80 }, { title = "Result", w = 100 }, { title = "Notes", flex = 1.6, min = 90 } },
+        data = arr(rows),
+        onRow = function(i)
+            if untag(rows[i][2]) == "PersistentDB round trip" then dbRoundTrip() end
+            sel[12] = rows[i]; diagRun()
+        end,
+        detail = function()
+            local r = sel[12]
+            local nOk, nWarn, nBad = 0, 0, 0
+            for _, row in ipairs(rows) do
+                local res = tostring(row[3] or "")
+                if res:find(H.C_GOOD, 1, true) then nOk = nOk + 1
+                elseif res:find(H.C_BAD, 1, true) then nBad = nBad + 1
+                elseif res:find(H.C_WARN, 1, true) then nWarn = nWarn + 1 end
+            end
+            local sum = H.col(H.C_GOOD, nOk .. " ok") .. H.lbl(", ") .. H.col(nWarn > 0 and H.C_WARN or H.C_LABEL, nWarn .. (nWarn == 1 and " warning" or " warnings"))
+                .. H.lbl(", ") .. H.col(nBad > 0 and H.C_BAD or H.C_LABEL, nBad .. (nBad == 1 and " failure" or " failures"))
+            return { lines = { sum, H.lbl("Grey = expected off state. Click the PersistentDB row to test storage.") },
+                copy = r and (untag(r[1]) .. " / " .. untag(r[2]) .. ": " .. untag(r[3])) or nil }
+        end }
+end
+
+-------------------------------------------------------------------------------
+-- 13. Error Log (this plugin's errors with stack traces, plus event log)
+-------------------------------------------------------------------------------
+local function viewErrors()
+    return { cols = { { title = "Time s", w = 60 }, { title = "Where", w = 110 }, { title = "Error", flex = 1, min = 90 } },
+        empty = "No errors since load (" .. fmt(secs(), 0) .. " s ago)",
+        data = { count = #errlog, get = function(i)
+            local e = errlog[i]; return { H.lbl(fmt(e.t / 50, 1)), H.val(e.where), H.col(H.C_BAD, e.msg) } end },
+        onRow = function(i) if #errlog == 0 then return end; sel[13] = errlog[i]; tbl.selected = i end,
+        detail = function()
+            local e = sel[13]
+            if e == nil then return { lines = { H.lbl(#errlog .. " errors caught in this plugin's callbacks. Other plugins' errors are not visible to plugins."),
+                H.lbl("Stack traces: ") .. (hasTrace and H.val("debug.traceback") or H.col(H.C_WARN, "not available in this client")) } } end
+            local lines = { H.col(H.C_BAD, e.msg) }
+            local tr = e.trace or "no stack trace"
+            for l in tr:gmatch("[^\n]+") do if #lines < 6 then lines[#lines + 1] = H.lbl(l) end end
+            return { lines = lines, copy = e.msg .. " | " .. tr:gsub("\n", " | ") }
+        end }
+end
+
+-------------------------------------------------------------------------------
+-- 14. API Explorer: what the API exposes in this client, with live
+--     read-only test calls. Missing namespaces are flagged, not hidden.
+-------------------------------------------------------------------------------
+local API_NS = { "Event", "Plugin", "PluginPermissions", "PersistentDB", "Mouse", "Keyboard", "audio", "ui", "config", "id",
+    "game", "http", "Vector2", "Vector3", "Vector4" }
+local TRIES = {
+    { "Mouse.IsAvailable()", function() return Mouse.IsAvailable() end },
+    { "Mouse.GetPosition()", function() local p = Mouse.GetPosition(); return p.x .. ", " .. p.y end },
+    { "Plugin.HasPermission(httpAccess)", function() return Plugin.HasPermission(PluginPermissions.httpAccess) end },
+    { "game.options.InterfaceScale.setting", function() return game.options.InterfaceScale.setting end },
+    { "game.options.VolumeMaster.setting", function() return game.options.VolumeMaster.setting end },
+    { "id.Sprite.FromID(1)", function() return id.Sprite.FromID(1) end },
+    { "id.Sound.FromID(1)", function() return id.Sound.FromID(1) end },
+    { "config.Obj.FromID(1).name", function() return config.Obj.FromID(1).name end },
+    { "config.Cursor.FromID(0).spriteID", function() return config.Cursor.FromID(0).spriteID end },
+    { "config.Font.FromID(font):GetStringWidth", function() return config.Font.FromID(H.FONT):GetStringWidth("Test") end },
+    { "ui.Interfaces:GetComponent(plugin layer)", function() return tostring(ui.Interfaces:GetComponent(id.Component.TOPLEVEL_V2__PLUGIN_BUILD_LAYER_TOP) ~= nil) end },
+    { "PersistentDB:IterateEntries (count)", function() local n = 0; PersistentDB:IterateEntries(function() n = n + 1; return false end); return n end },
+    { "os.clock()", function() return os.clock() end },
+}
+local api = { mode = "members", rows = nil, tries = {} }
+-- Known gaps and bugs reported in the plugin developer Discord (FAQ numbers).
+-- "Live" runs a presence check where one is possible; otherwise "reported".
+local GAPS = {
+    { "No os library (use Logic ticks to time)", 22, function() return type(rawget(_G, "os")) == "table" and "os present here" or "confirmed: os missing" end },
+    { "ExecuteConsoleCommand exists (used by the Commands tab)", 3, function() return type(rawget(_G, "ExecuteConsoleCommand")) == "function" and "present" or "not present" end },
+    { "requiredPermissions does not work; use optional", 1, nil },
+    { "LocList.All() returns scenery only", 24, function() return type(rawget(_G, "LocList")) == "table" and "LocList present (not called)" or "LocList not global" end },
+    { "Chat event fields are read only", 20, nil },
+    { "No component text update events, no wait", 19, nil },
+    { "Headerless group box: SetHeaderLayout(0,0,0,0,0) still shows a header", 14, nil },
+    { "Two NPCEntityAdded listeners: second gets isValid false", 21, nil },
+    { "Docs say valid, property is isValid", 23, nil },
+    { "Sound volume below 1 reported as not playing", 28, nil },
+    { "Drag coordinates scale on high DPI", 15, nil },
+    { "No auto-focus for text inputs", 16, nil },
+    { "Animations, gizmo perks, drop tables not exposed", 24, nil },
+    { "Friends and FC lists only while their window is open", 24, nil },
+    { "Library-made components not destroyed on reload", 13, nil },
+    { "Dev plugins do not re-enable on login", 11, nil },
+}
+local function apiMembers()
+    local rows = {}
+    for _, ns in ipairs(API_NS) do
+        local t = rawget(_G, ns)
+        if t == nil then
+            rows[#rows + 1] = { H.val(ns), H.lbl("-"), H.col(H.C_WARN, "missing") }
+        else
+            local keys = {}
+            pcall(function() for k, v in pairs(t) do keys[#keys + 1] = { k = tostring(k), ty = type(v) } end end)
+            table.sort(keys, function(a, b) return a.k < b.k end)
+            if #keys == 0 then rows[#rows + 1] = { H.val(ns), H.lbl(type(t)), H.col(H.C_GOOD, "present (not listable)") } end
+            for i, k in ipairs(keys) do
+                if i > 400 then rows[#rows + 1] = { H.val(ns .. "..."), H.lbl(""), H.lbl((#keys - 400) .. " more") }; break end
+                rows[#rows + 1] = { H.val(ns .. "." .. plain(k.k)), H.lbl(k.ty), H.col(H.C_GOOD, "present") }
+            end
+        end
+    end
+    return rows
+end
+local function viewApi()
+    if api.mode == "gaps" then
+        local rows = {}
+        for _, g in ipairs(GAPS) do
+            local live = "reported"
+            if g[3] then local ok, v = pcall(g[3]); live = ok and tostring(v) or "check failed" end
+            rows[#rows + 1] = { H.val(g[1]), H.lbl(g[2]), H.lbl(live), g = g }
+        end
+        return { cols = { { title = "Known gap or bug", flex = 2, min = 120 }, { title = "FAQ", w = 36 }, { title = "Live check", flex = 1, min = 80 } },
+            data = arr(rows),
+            onRow = function(i) sel[14.7] = rows[i].g; tbl.selected = i end,
+            detail = function()
+                local g = sel[14.7]
+                if g == nil then return { lines = { H.lbl("From the plugin developer Discord. Click a row to see the FAQ answer.") } } end
+                for _, e in ipairs(FAQ) do if e.n == g[2] then
+                    local lines = { H.gold(plain(e.q)) }
+                    for _, l in ipairs(wrap(plain(e.a), areaW() - 8, DETAIL_N - 1)) do lines[#lines + 1] = H.val(l) end
+                    return { lines = lines, copy = plain(e.a) }
+                end end
+                return { lines = { H.val(g[1]) } }
+            end }
+    elseif api.mode == "events" then
+        local rows = {}
+        for _, n in ipairs(EVENTS) do
+            local st = subs[n] == true and H.col(H.C_GOOD, "works") or (subs[n] == false and H.col(H.C_BAD, "subscribe failed") or H.lbl("-"))
+            rows[#rows + 1] = { H.val("Event." .. n), st, H.lbl(ev.counts[n] or 0) }
+        end
+        rows[#rows + 1] = { H.val("Event.ChatMessage"), H.lbl("not tested"), H.lbl("needs chatAccess") }
+        return { cols = { { title = "Event", flex = 1, min = 110 }, { title = "Subscribe", w = 110 }, { title = "Fired", w = 60 } }, data = arr(rows) }
+    elseif api.mode == "try" then
+        local rows = {}
+        for i, t in ipairs(TRIES) do
+            local r = api.tries[i]
+            rows[#rows + 1] = { H.val(t[1]), r == nil and H.lbl("click to run") or (r.ok and H.col(H.C_GOOD, "ok") or H.col(H.C_BAD, "error")), H.lbl(r and r.v or "") }
+        end
+        return { cols = { { title = "Read-only call", flex = 2, min = 120 }, { title = "Status", w = 80 }, { title = "Result", flex = 1, min = 70 } },
+            data = arr(rows),
+            onRow = function(i)
+                local trace = nil
+                local ok, v = xpcall(TRIES[i][2], function(e) if hasTrace then pcall(function() trace = debug.traceback(tostring(e), 2) end) end; return e end)
+                api.tries[i] = { ok = ok, v = untag(v), trace = trace }
+                sel[14] = i; tbl.selected = i
+            end,
+            detail = function()
+                local i = sel[14]
+                if i == nil then return { lines = { H.lbl("Click a call to run it now. All calls are read only.") } } end
+                local r = api.tries[i]
+                return { lines = { H.gold(TRIES[i][1]), r.ok and H.val(r.v) or H.col(H.C_BAD, r.v), r.trace and H.lbl((r.trace:gsub("\n", "  "))) or nil },
+                    copy = TRIES[i][1] .. "  -- " .. r.v }
+            end }
+    end
+    api.rows = api.rows or apiMembers()
+    local q = norm(readField(api.field, 64))
+    local rows = {}
+    for _, r in ipairs(api.rows) do if q == "" or string.find(norm(untag(r[1])), q, 1, true) then rows[#rows + 1] = r end end
+    return { cols = { { title = "Name", flex = 2, min = 120 }, { title = "Type", w = 70 }, { title = "In this client", w = 110 } }, data = arr(rows),
+        onRow = function(i) sel[14.5] = rows[i]; tbl.selected = i end,
+        detail = function()
+            local r = sel[14.5]
+            return { lines = { H.lbl(#api.rows .. " entries read live from the API tables. Missing ones are marked.") }, copy = r and untag(r[1]) or nil }
+        end }
+end
+
+
+-------------------------------------------------------------------------------
+-- 15. Commands: run documented console commands with ExecuteConsoleCommand.
+--     Only commands from the official docs (tutorial 1, Core, Developer
+--     cheats) and the Discord FAQ are listed. Runs only on a Run click;
+--     poff / prl of RS Dev Tools and !resetsave need a Confirm click.
+--     ExecuteConsoleCommand needs no permission (the documented
+--     PluginPermissions are httpAccess, chatAccess and trackingAccess only).
+-------------------------------------------------------------------------------
+local cmd, viewCmd, cmdFn, cmdBuild, cmdRun, cleanCmd
+do
+local CMDS = {
+    { "help", {}, "List the console commands this client has", "API docs: Core, ExecuteConsoleCommand" },
+    { "plist", {}, "List the plugins found in dev_plugins and which are enabled", "Tutorial 1" },
+    { "prf", {}, "Refresh the plugin list; also needed after any plugin.json change", "Tutorial 1; FAQ 4, 6" },
+    { "pon", { "plugin" }, "Turn a plugin on (enable it)", "Tutorial 1" },
+    { "poff", { "plugin" }, "Turn a plugin off (disable it)", "Tutorial 1" },
+    { "prl", { "plugin" }, "Reload a plugin (off and on again) to pick up edited Lua files", "Tutorial 1; FAQ 6" },
+    { "ppr", { "plugin" }, "Set up a plugin's permissions in dev, before ppe", "FAQ 2, 3" },
+    { "ppe", { "plugin", "permission" }, "Grant a permission in dev (httpAccess, chatAccess or trackingAccess), then prl", "FAQ 2, 3" },
+    { "displayfps", {}, "Show the FPS readout for performance tests", "FAQ 6" },
+    { "!resetsave", {}, "Dev cheat: your dev character resets to a fresh start at the next login. Logged on the server", "API docs: Developer cheats" },
+    { "!allinone", {}, "Dev cheat: unlocks a lot of account progression varplayers. Logged on the server", "API docs: Developer cheats" },
+    { "!godmode", {}, "Dev cheat: your character cannot be killed. Logged on the server", "API docs: Developer cheats" },
+    { "!tele", { "coords" }, "Dev cheat: teleport to coordinates such as 0,50,52,12,53. Logged on the server", "API docs: Developer cheats" },
+}
+local ARG_HINT = { plugin = "PLUGIN folder", permission = "PERMISSION", coords = "COORDS" }
+local PERMS = { httpaccess = "httpAccess", chataccess = "chatAccess", trackingaccess = "trackingAccess" }
+cmd = { mode = "list", hist = {}, pending = nil, arg1 = nil, arg2 = nil, free = nil, runB = nil, sel = nil, note = nil }
+cmdFn = function() local f = rawget(_G, "ExecuteConsoleCommand"); return type(f) == "function" and f or nil end
+cleanCmd = function(s)
+    local t = helpers.cleanText(s, 160)
+    t = t:gsub("[^%w%s%-_%.,!:/=%+]", ""):gsub("%s+", " "):gsub("^ ", ""):gsub(" $", "")
+    return t
+end
+local function cleanArg(kind, s)
+    local t = helpers.cleanText(s, 64)
+    if kind == "plugin" then
+        t = string.lower(t):gsub("[%s_]+", "-"):gsub("[^a-z0-9%-]", "")
+        return t ~= "" and t or nil
+    elseif kind == "permission" then
+        return PERMS[string.lower(t):gsub("[^a-z]", "")]
+    elseif kind == "coords" then
+        t = t:gsub("[^%d,]", "")
+        return t:match("^%d+,%d+,%d+,%d+,%d+$") and t or nil
+    end
+    return nil
+end
+--- true when the text would disable, reload or reset RS Dev Tools / the save
+local function needsConfirm(text)
+    local w = {}
+    for word in string.lower(text):gmatch("%S+") do w[#w + 1] = word end
+    for i, x in ipairs(w) do
+        if x == "!resetsave" then return "!resetsave resets your dev character" end
+        if (x == "poff" or x == "prl") and w[i + 1] then
+            local t = w[i + 1]:gsub("[%s_]+", "-")
+            if t == SLUG or t == "rs-dev-tools" or t == "rsdevtools" then
+                return x == "poff" and "this turns RS Dev Tools off" or "this reloads RS Dev Tools (its panel closes and reopens)"
+            end
+        end
+    end
+    return nil
+end
+cmdRun = function(text, confirmed)
+    local f = cmdFn()
+    if f == nil then cmd.note = "ExecuteConsoleCommand is not available in this client; nothing was run."; return end
+    if text == nil or text == "" then cmd.note = "Nothing to run."; return end
+    local why = needsConfirm(text)
+    if why and not confirmed then cmd.pending = text; cmd.note = "Confirm needed: " .. why .. "."; return end
+    cmd.pending = nil
+    local ok, err = pcall(f, text)
+    table.insert(cmd.hist, 1, { t = secs(), c = text, ok = ok, r = ok and "sent (output is shown in the console only)" or untag(tostring(err)) })
+    if #cmd.hist > 100 then cmd.hist[#cmd.hist] = nil end
+    if not ok then logError("ExecuteConsoleCommand", tostring(err)) end
+    cmd.note = ok and ("Sent: " .. text) or ("Error: " .. untag(tostring(err)))
+end
+cmdBuild = function()
+    local c = cmd.sel
+    if c == nil then return nil, "Pick a command in the table." end
+    local parts = { c[1] }
+    for k, kind in ipairs(c[2]) do
+        local raw = readField(k == 1 and cmd.arg1 or cmd.arg2, 64)
+        local v = cleanArg(kind, raw)
+        if kind == "plugin" and v == nil then v = SLUG end
+        if v == nil then return nil, "Argument " .. k .. " (" .. ARG_HINT[kind] .. ") is missing or not valid." end
+        parts[#parts + 1] = v
+    end
+    return table.concat(parts, " "), nil
+end
+viewCmd = function()
+    local f = cmdFn()
+    local status = f and H.col(H.C_GOOD, "Console commands available") or H.col(H.C_BAD, "Console commands missing: Run disabled")
+    local function lines(extra)
+        -- one header line; fixed 4 lines so the table never jumps
+        local L = { status .. H.lbl(" - no permission needed") }
+        for _, x in ipairs(extra) do L[#L + 1] = x end
+        if cmd.pending then L[#L + 1] = H.col(H.C_WARN, "Pending: " .. cmd.pending .. " - Confirm or Cancel")
+        elseif cmd.note then L[#L + 1] = H.lbl(cmd.note) end
+        while #L < 3 do L[#L + 1] = " " end
+        while #L > 3 do table.remove(L) end
+        return L
+    end
+    if cmd.mode == "history" then
+        local rows = {}
+        for _, h in ipairs(cmd.hist) do
+            rows[#rows + 1] = { H.lbl(fmt(h.t, 0)), H.val(h.c), h.ok and H.col(H.C_GOOD, h.r) or H.col(H.C_BAD, h.r), h = h }
+        end
+        return { cols = { { title = "Ran", w = 50 }, { title = "Command", flex = 1, min = 90 }, { title = "Result", flex = 1, min = 90 } }, data = arr(rows),
+            onRow = function(i) sel[T_CMD] = rows[i].h; tbl.selected = i end,
+            detail = function()
+                local h = sel[T_CMD]
+                return { lines = lines({ H.lbl(#cmd.hist .. " commands run this session. Plugins cannot read console output.") }), copy = h and h.c or nil }
+            end }
+    end
+    local rows = {}
+    local RED = "E04A3A"
+    local dividerDone = false
+    for _, c in ipairs(CMDS) do
+        local cheat = c[1]:sub(1, 1) == "!"
+        if cheat and not dividerDone then
+            dividerDone = true
+            rows[#rows + 1] = { H.col(RED, "Dev cheats"), H.col(RED, "----------"), H.col(RED, "logged on the server; !resetsave asks to confirm"), H.lbl(""), divider = true }
+        end
+        local a = {}
+        for _, k in ipairs(c[2]) do a[#a + 1] = ARG_HINT[k] end
+        local desc = c[3]:gsub("^Dev cheat: ", ""):gsub("%. Logged on the server$", "")
+        rows[#rows + 1] = { cheat and H.col(RED, c[1]) or H.val(c[1]), H.lbl(#a > 0 and table.concat(a, " ") or "-"), cheat and H.col(RED, desc) or H.lbl(desc),
+            H.lbl((c[4]:gsub("API docs: ", "Docs: "))), c = c,
+            tip = c[1] .. ": " .. c[3] .. ". Source: " .. c[4] .. "." }
+    end
+    return { cols = { { title = "Command", w = 84 }, { title = "Args", w = 96 }, { title = "Description", flex = 1, min = 120 }, { title = "Source", w = 72, tip = "Where the command is documented. Hover a row for the full source." } }, data = arr(rows),
+        onRow = function(i) if rows[i].divider then return end; cmd.sel = rows[i].c; sel[T_CMD] = rows[i].c; tbl.selected = i; cmd.pending = nil; cmd.note = nil end,
+        detail = function()
+            local text, err = cmdBuild()
+            local x = {}
+            if cmd.sel then
+                local a = {}
+                for k, kind in ipairs(cmd.sel[2]) do a[#a + 1] = "box " .. k .. ": " .. ARG_HINT[kind] .. (kind == "plugin" and (" (empty = " .. SLUG .. ")") or "") end
+                x[#x + 1] = H.gold(cmd.sel[1]) .. H.lbl(#a > 0 and ("  - type " .. table.concat(a, ", ")) or "  - no arguments")
+                x[#x + 1] = text and (H.lbl("Will run: ") .. H.val(text)) or H.col(H.C_WARN, err)
+            else
+                x[#x + 1] = H.lbl("Pick a command, fill its boxes and press Run.")
+            end
+            return { lines = lines(x), copy = text }
+        end }
+end
+end
+
+local VIEWS = { viewUI, viewPlug, viewEvents, viewBrowse, viewAudio, viewSettings, viewPerf, viewGrid, viewFit, viewReload, viewFaq,
+    viewDiag, viewErrors, viewApi, viewCmd }
+local JUMPS = {}   -- 0.2.6: every tab gets the full pager
+
+-------------------------------------------------------------------------------
+-- Layout
+-------------------------------------------------------------------------------
+local PREV = 64   -- review: 64px preview
+local lastCopy = nil
+local pages = {}
+local function flow(items, y, gap)
+    local avail = areaW()
+    local x = 0
+    for _, it in ipairs(items) do
+        if x > 0 and x + it.w > avail then x = 0; y = y + H.BTN_H + gap end
+        it.x, it.y = H.PAD + x, y
+        helpers.safe(function() it.c:SetPos(it.x, it.y) end)
+        x = x + it.w + gap
+    end
+    return y + H.BTN_H + 6
+end
+
+layout = function()
+    if root == nil then return end
+    local t0 = nil
+    if perf.hasClock then pcall(function() t0 = os.clock() end) end
+    local y = H.PAD + helpers.TITLE_HEIGHT + 4
+    -- 0.2.6: category row, then the current category's tabs (filled highlight)
+    do
+        local ci = CATG.of(state.tab)
+        y = flow(CATG.catBtns, y, 4) - 6 + 4
+        local a = CATG.catBtns[ci]
+        helpers.safe(function() CATG.catHi:SetPos(a.x - 2, a.y - 2); CATG.catHi:SetSize(a.w + 4, H.BTN_H + 4); CATG.catTint:SetPos(a.x, a.y); CATG.catTint:SetSize(a.w, H.BTN_H) end)
+        local list = {}
+        for i2, b in ipairs(tabBtns) do
+            local show = CATG.of(i2) == ci
+            helpers.setHidden({ b.c }, not show)
+            if show then list[#list + 1] = b end
+        end
+        y = flow(list, y, 4) - 6 + 2
+    end
+    local a = tabBtns[state.tab]
+    helpers.safe(function() tabHi:SetPos(a.x - 2, a.y - 2); tabHi:SetSize(a.w + 4, H.BTN_H + 4); CATG.tabTint:SetPos(a.x, a.y); CATG.tabTint:SetSize(a.w, H.BTN_H) end)
+    helpers.safe(function() detail.div:SetPos(H.PAD, y - 2); detail.div:SetSize(areaW(), 1) end)
+    y = y + 4
+    local vis = {}
+    for t, list in pairs(ctrls) do
+        for _, it in ipairs(list) do
+            local show = t == state.tab and (it.show == nil or it.show())
+            helpers.setHidden({ it.c }, not show)
+            if show then vis[#vis + 1] = it end
+        end
+    end
+    if #vis > 0 then y = flow(vis, y, 6) end
+    -- the tab's table and detail view
+    local ok, v = guarded("view " .. TABS[state.tab], VIEWS[state.tab])
+    if not ok or type(v) ~= "table" then v = { cols = { { title = "Error", flex = 1 } }, data = arr({ { H.col(H.C_BAD, "this tab failed; see Error Log") } }) } end
+    if v.data and v.data.get and not v.data.tipped then
+        local get = v.data.get
+        v.data.get = function(i)
+            local r = get(i)
+            if type(r) == "table" and r.tip == nil and r.tips == nil then
+                r.tip = TIPS.rows[untag(r[1])] or TIPS.rows[untag(r[2] or "")]
+                if r.tip == nil and state.tab == T_SET and setMode == "client" then
+                    r.tip = "game.options." .. untag(r[1]) .. ": a client setting, read only. Value is its current setting number; Range is the lowest and highest it accepts."
+                end
+            end
+            return r
+        end
+        v.data.tipped = true
+    end
+    tbl:setColumns(v.cols, v.data, v.onRow, v.icon)
+    tbl.emptyMsg = v.empty or "Nothing to show"
+    local d = nil
+    if v.detail then local okd, dd = guarded("detail " .. TABS[state.tab], v.detail); if okd then d = dd end end
+    local lineX, top = H.PAD, y
+    local pv = d and d.preview
+    helpers.safe(function() detail.box.hidden = pv == nil; detail.spr.hidden = true; detail.obj.hidden = true end)
+    if pv then
+        helpers.safe(function()
+            detail.box:SetPos(H.PAD, y); detail.box:SetSize(PREV + 8, PREV + 8)
+            local s = pv.item and detail.obj or detail.spr
+            if pv.item then s:SetAssociatedObject(pv.id) else s.sprite = pv.spr end
+            s:SetPos(H.PAD + 4, y + 4); s:SetSize(PREV, PREV); s.hidden = false
+        end)
+        lineX = H.PAD + PREV + 16
+    end
+    local n = 0
+    for i = 1, DETAIL_N do
+        local s = d and d.lines and d.lines[i]
+        helpers.setHidden({ detail.lines[i] }, s == nil)
+        if s then
+            n = i
+            helpers.safe(function() detail.lines[i]:SetPos(lineX, y + (i - 1) * H.ROW_HEIGHT); detail.lines[i]:SetSize(areaW() - (lineX - H.PAD), H.ROW_HEIGHT) end)
+            helpers.setText(detail.lines[i], s)
+        end
+    end
+    y = y + n * H.ROW_HEIGHT
+    -- copy row: full width under the detail (and under the preview), same
+    -- left edge and height as the controls and table, never above the tab bar
+    if pv then y = math.max(y, top + PREV + 8) end
+    local hasCopy = d ~= nil and d.copy ~= nil
+    local c = hasCopy and helpers.cleanText(d.copy, 1000) or nil
+    if c ~= lastCopy then lastCopy = c; detail.editing = false end
+    helpers.setHidden({ detail.copyLbl, detail.copyBg, detail.copySel }, not hasCopy)
+    helpers.setHidden({ detail.copy }, not (hasCopy and detail.editing))
+    helpers.setHidden({ detail.copyShow }, not (hasCopy and not detail.editing))
+    if hasCopy then
+        local cy = math.max(y + 2, top)
+        local fw = math.max(60, areaW() - 44 - 60)
+        helpers.safe(function()
+            detail.copyLbl:SetPos(H.PAD, cy)
+            detail.copyBg:SetPos(H.PAD + 44, cy); detail.copyBg:SetSize(fw, H.BTN_H)
+            detail.copyShow:SetPos(H.PAD + 44, cy); detail.copyShow:SetSize(fw, H.BTN_H)
+            detail.copy:SetPos(H.PAD + 44, cy); detail.copy:SetSize(fw, H.BTN_H)
+            detail.copySel:SetPos(H.PAD + 44 + fw + 4, cy)
+        end)
+        helpers.setText(detail.copyShow, H.val(c))
+        helpers.setText(detail.copySel, detail.editing and "Done" or "Select", "label")
+        pcall(function() if detail.copy.content ~= c then detail.copy.content = c end end)
+        y = cy + H.BTN_H + 4
+    end
+    if n > 0 or pv or hasCopy then y = y + 6 end
+    if state.tab == T_GRID then placeGrid(y); y = y + GRID_H + 6 else placeGrid(nil) end
+    if state.tab == T_FIT then placeFit(y); y = y + H.ROW_HEIGHT + 10 else placeFit(nil) end
+    -- 0.2.6: never run off the screen: fewer rows per page when the panel
+    -- would reach the bottom of the game window (Commands overflowed).
+    do
+        local sh, r = helpers.screenH(), helpers.panelRect()
+        local rows = Table.ROWS
+        if sh and r then
+            local room = sh - r.y - y - (H.ROW_HEIGHT + 2) - (6 + H.BTN_H + 8) - helpers.GRIP_STRIP - H.PAD
+            rows = math.max(4, math.min(Table.ROWS, math.floor(room / H.ROW_HEIGHT)))
+        end
+        if tbl.visRows ~= rows then tbl.visRows = rows; if tbl.page > tbl:pages() then tbl.page = tbl:pages() end end
+    end
+    y = tbl:place(y, H.PAD, areaW(), JUMPS[state.tab])
+    if settingsUI ~= nil then
+        settingsUI.open = state.editOpen == true
+        y = settingsUI:place(y)
+    end
+    helpers.fitHeight(y)
+    if t0 then
+        pcall(function()
+            local c = perf.cost; c[#c + 1] = os.clock() - t0
+            if #c > 50 then table.remove(c, 1) end
+        end)
+    end
+end
+refresh = function() pcall(layout) end
+Table.gloss = function(title)
+    title = untag(title or "")
+    return TIPS.tabcols[TABS[state.tab] .. "|" .. title] or TIPS.cols[title] or TIPS.cols[(title:gsub("%s*%d+$", ""))]
+end
+
+local function selectTab(i)
+    pages[state.tab] = tbl.page
+    state.tab = i; save()
+    tbl.page = pages[i] or 1
+    tbl.selected = nil
+    layout(); helpers.refit()
+end
+
+-------------------------------------------------------------------------------
+-- Build
+-------------------------------------------------------------------------------
+local function rect(parent, r, g, b, a)
+    local c = nil
+    pcall(function() c = ui.Rectangle.new(parent); c.fill = true; c.colour = Vector4.new(r, g, b, a) end)
+    return c
+end
+local function cycleBtn(tab, labels, get, set, w)
+    local b
+    local function label() for i, l in ipairs(labels) do if l[1] == get() then return l[2], i end end; return labels[1][2], 1 end
+    local names = {}
+    for _, l in ipairs(labels) do names[#names + 1] = l[2] end
+    b = btn(tab, label(), w, function()
+        local _, i = label()
+        set(labels[i % #labels + 1][1]); setLabel(b, (label())); tbl.page = 1; tbl.selected = nil; refresh()
+    end, nil, "__cycle")
+    helpers.setTip(b, "Switch view. Click to cycle: " .. table.concat(names, ", ") .. ".")
+    return b
+end
+
+local function buildPanel(w)
+    root = w
+    tabHi = R("tab highlight", "Rectangle", rect(root, 0x5A/255, 0x4A/255, 0x2A/255, 1.0))
+    CATG.catHi = R("category highlight", "Rectangle", rect(root, 0x7A/255, 0x60/255, 0x2A/255, 1.0))
+    for i, c in ipairs(CATG.CATS) do
+        local bw = tw(c.name) + 22
+        local b = helpers.button(root, 0, 0, bw, H.BTN_H, c.name, function()
+            if CATG.of(state.tab) ~= i then selectTab(c.tabs[1]) end
+        end)
+        CATG.catBtns[i] = { c = b, w = bw }
+        helpers.setTip(b, CATG.TIP[c.name])
+        R("category " .. c.name, "Button", b)
+    end
+    for i, name in ipairs(TABS) do
+        local bw = tw(name) + 16
+        local b = helpers.button(root, 0, 0, bw, H.BTN_H, name, function() selectTab(i) end)
+        tabBtns[i] = { c = b, w = bw }
+        R("tab " .. name, "Button", b)
+    end
+    detail.div = R("divider", "Rectangle", rect(root, 0.78, 0.70, 0.52, 0.9))
+    -- filled selected state: a click-through gold tint over the chosen buttons
+    for _, k in ipairs({ "cat", "tab" }) do
+        local t = rect(root, 0xE0/255, 0xB0/255, 0x40/255, 0.28)
+        helpers.safe(function() t.clickthrough = true; t.enabled = false end)
+        if k == "cat" then CATG.catTint = t else CATG.tabTint = t end
+    end
+
+    -- 1 UI Inspector
+    cycleBtn(T_UI, { { "summary", "Summary" }, { "components", "Components" } }, function() return uiMode end, function(v) uiMode = v end, 96)
+    local frzB
+    frzB = btn(T_UI, "Freeze", 64, function() frozen = not frozen; setLabel(frzB, frozen and "Live" or "Freeze") end)
+    -- 2 Plugin Analyser
+    cycleBtn(T_PLUG, { { "layer", "Plugin layer" }, { "hooks", "Opt-in hooks" }, { "limits", "What is possible" } },
+        function() return plug.mode end, function(v) plug.mode = v end, 124)
+    btn(T_PLUG, "Scan", 52, function() plugScan(); plug.open = nil; refresh() end, function() return plug.mode == "layer" end)
+    btn(T_PLUG, "Back", 52, function() plug.open = nil; sel[T_PLUG] = nil; tbl.page = 1; refresh() end, function() return plug.mode == "layer" and plug.open ~= nil end)
+    -- 3 Events
+    cycleBtn(T_EV, { { "counts", "Counts" }, { "recent", "Recent" } }, function() return evMode end, function(v) evMode = v end, 70)
+    local pauseB
+    pauseB = btn(T_EV, "Pause", 60, function() ev.paused = not ev.paused; setLabel(pauseB, ev.paused and "Resume" or "Pause") end)
+    btn(T_EV, "Clear", 52, function() ev.counts, ev.last, ev.log, ev.since = {}, {}, {}, secs(); refresh() end)
+    -- 4 Sprite Browser
+    cycleBtn(T_BROWSE, { { "sprite", "Sprites" }, { "item", "Items" }, { "cursor", "Cursors" } },
+        function() return state.set end, function(v) state.set = v; save(); sel[T_BROWSE] = nil; br.lastN = -1 end, 72)
+    brLetter = btn(T_BROWSE, "Letter: All", 90, function()
+        br.letter = br.letter % #LETTERS + 1
+        setLabel(brLetter, "Letter: " .. LETTERS[br.letter]); brFilter(); tbl:go(1); refresh()
+    end)
+    brSearch = field(T_BROWSE, 160, "Search name or id", "browser search")
+    brIdField = field(T_BROWSE, 80, "Go to ID", "id jump")
+    btn(T_BROWSE, "Go", 36, function() brGoId(helpers.cleanInt(readField(brIdField, 8), 0, 9999999) or 0); refresh() end)
+    btn(T_BROWSE, "Keypad", 60, function() br.pad = not br.pad; refresh() end)
+    local function padShow() pcall(function() brIdField.content = br.padStr end) end
+    for dgt = 0, 9 do
+        btn(T_BROWSE, tostring(dgt), 26, function() if #br.padStr < 7 then br.padStr = br.padStr .. dgt; padShow() end end, function() return br.pad end)
+    end
+    btn(T_BROWSE, "Del", 40, function() br.padStr = string.sub(br.padStr, 1, -2); padShow() end, function() return br.pad end)
+    btn(T_BROWSE, "Clear", 48, function() br.padStr = ""; padShow() end, function() return br.pad end)
+    -- review: the ID -1000..+1000 row was dropped; Go to ID covers it.
+    -- 5 Audio
+    cycleBtn(T_AUDIO, { { "sounds", "Sounds" }, { "volumes", "Volumes" }, { "bus", "Bus test" } }, function() return snd.mode end, function(v) snd.mode = v end, 76)
+    sndSearch = field(T_AUDIO, 160, "Search sound or id", "sound search", function() return snd.mode == "sounds" end)
+    -- 0.2.6: Bus picker (replaces Vol: the client mutes volumes below 1.0)
+    do
+        local buses = CATG.busList()
+        local okBus = false
+        for _, b in ipairs(buses) do if b == state.bus then okBus = true end end
+        if not okBus then state.bus = "MASTER" end
+        volBtn = btn(T_AUDIO, "Bus: " .. state.bus, 132, function()
+            local L = CATG.busList()
+            if #L == 0 then return end
+            local k = 1
+            for i, b in ipairs(L) do if b == state.bus then k = i end end
+            state.bus = L[k % #L + 1]; save()
+            setLabel(volBtn, "Bus: " .. state.bus); refresh()
+        end, function() return snd.mode == "sounds" end, "__bus")
+        helpers.setTip(volBtn, function()
+            return (CATG.BUS_TIP[state.bus] or (state.bus .. ": a mixer sub-bus from audio.AudioBus; it may be silent if the game routes nothing from it.")) ..
+                " Click to cycle through the " .. #CATG.busList() .. " buses the API exposes. Sounds play at full volume on that bus; the game's sliders set the level."
+        end)
+    end
+    btn(T_AUDIO, "Stop all", 68, function() sndStopAll(); refresh() end)
+    -- 6 Settings
+    cycleBtn(T_SET, { { "plugin", "This plugin" }, { "client", "Client options" } }, function() return setMode end, function(v) setMode = v end, 110)
+    setField = field(T_SET, 170, "Filter keys and options", "settings filter")
+    -- 7 Perf
+    btn(T_PERF, "Reset", 52, function() perfReset(); refresh() end)
+    -- 8 Grid
+    local stepB
+    stepB = btn(T_GRID, "Grid " .. STEPS[state.gridStep], 64, function()
+        state.gridStep = state.gridStep % #STEPS + 1; save()
+        setLabel(stepB, "Grid " .. STEPS[state.gridStep]); refresh()
+    end)
+    preview.gridBg = R("grid area", "Rectangle", rect(root, 0.11, 0.10, 0.09, 0.94))
+    preview.gv, preview.gh = {}, {}
+    for i = 1, MAXV do preview.gv[i] = rect(root, 0.66, 0.64, 0.60, 0.35) end
+    for i = 1, MAXH do preview.gh[i] = rect(root, 0.66, 0.64, 0.60, 0.35) end
+    preview.dot = R("grid cursor", "Rectangle", rect(root, 1.0, 0.8, 0.27, 1.0))
+    helpers.safe(function() preview.dot:SetSize(5, 5); preview.dot.hidden = true end)
+    -- 9 Text fit
+    fitField = field(T_FIT, 180, "Text to measure", "fit text")
+    loadFonts()
+    fitWBtn = btn(T_FIT, "Box " .. FIT_WS[state.fitW], 64, function()
+        state.fitW = state.fitW % #FIT_WS + 1; save()
+        setLabel(fitWBtn, "Box " .. FIT_WS[state.fitW]); refresh()
+    end)
+    preview.fitBg = R("fit box", "Rectangle", rect(root, 0.11, 0.10, 0.09, 0.94))
+    preview.fitT = R("fit text", "Text", newText(root, 100))
+    -- 10 Reload
+    slugField = field(T_RELOAD, 170, "Plugin folder (" .. SLUG .. ")", "slug")
+    -- 11 FAQ
+    faqField = field(T_FAQ, 200, "Search questions and answers", "faq search")
+    -- 12 Diagnostics
+    btn(T_DIAG, "Run", 44, function() diagRun(); refresh() end)
+    -- 13 Error log
+    btn(T_ERR, "Clear", 52, function() errlog = {}; sel[13] = nil; refresh() end)
+    btn(T_ERR, "Test error", 80, function()
+        guarded("Test error button", function() error("deliberate test error (checks that capture and traces work)") end); refresh()
+    end)
+    -- 14 API Explorer
+    cycleBtn(T_API, { { "members", "Members" }, { "events", "Events" }, { "try", "Try calls" }, { "gaps", "Known gaps" } }, function() return api.mode end, function(v) api.mode = v end, 80)
+    api.field = field(T_API, 170, "Filter names", "api filter", function() return api.mode == "members" end)
+    btn(T_API, "Reread", 60, function() api.rows = nil; refresh() end, function() return api.mode == "members" end)
+
+    -- Commands
+    local function selArgs(n) return function() return cmd.mode == "list" and cmd.sel ~= nil and #cmd.sel[2] >= n end end
+    cycleBtn(T_CMD, { { "list", "All" }, { "history", "History" } }, function() return cmd.mode end, function(v) cmd.mode = v end, 84)
+    cmd.arg1 = field(T_CMD, 130, "Argument 1", "cmd arg1", selArgs(1))
+    cmd.arg2 = field(T_CMD, 120, "Argument 2", "cmd arg2", selArgs(2))
+    cmd.runB = btn(T_CMD, cmdFn() and "Run" or "Run (unavailable)", cmdFn() and 44 or 120, function()
+        if cmdFn() == nil then cmd.note = "ExecuteConsoleCommand is not available in this client; Run is disabled."; refresh(); return end
+        local text, err = cmdBuild()
+        if text then cmdRun(text) else cmd.note = err end
+        refresh()
+    end, function() return cmd.mode == "list" end, "Run command")
+    cmd.free = field(T_CMD, 170, "Type any console command", "cmd free")
+    btn(T_CMD, "Run text", 64, function()
+        if cmdFn() == nil then cmd.note = "ExecuteConsoleCommand is not available in this client; Run is disabled."; refresh(); return end
+        cmdRun(cleanCmd(readField(cmd.free, 160))); refresh()
+    end)
+    btn(T_CMD, "Confirm", 64, function() if cmd.pending then cmdRun(cmd.pending, true) end; refresh() end, function() return cmd.pending ~= nil end)
+    btn(T_CMD, "Cancel", 56, function() cmd.pending = nil; cmd.note = "Cancelled."; refresh() end, function() return cmd.pending ~= nil end)
+    btn(T_CMD, "Clear", 52, function() cmd.hist = {}; sel[T_CMD] = nil; refresh() end, function() return cmd.mode == "history" end)
+
+    -- detail view
+    detail.box = R("preview box", "Rectangle", rect(root, 0.11, 0.10, 0.09, 0.94))
+    pcall(function() detail.spr = ui.Sprite.new(root); detail.spr.hidden = true end)
+    pcall(function() detail.obj = ui.Sprite.new(root); detail.obj.hidden = true end)
+    R("large preview (sprite)", "Sprite", detail.spr); R("large preview (item)", "Sprite", detail.obj)
+    detail.lines = {}
+    for i = 1, DETAIL_N do
+        detail.lines[i] = newText(root, 200)
+        helpers.track(detail.lines[i], "content", 2)
+        R("detail " .. i, "Text", detail.lines[i])
+    end
+    -- Copy row (0.2.1): created hidden (0.2.0 created the field visible at
+    -- 0,0, on top of the title and tab bar, until the first layout). The
+    -- row shows the text shortened with an ellipsis (full text in the hover
+    -- box); Select swaps in a text box holding the full text for copying.
+    detail.copyLbl = newText(root, 44)
+    helpers.safe(function() detail.copyLbl:SetSize(44, H.BTN_H); detail.copyLbl.hidden = true end)
+    helpers.setText(detail.copyLbl, H.lbl("Copy"))
+    detail.copyShow = newText(root, 200)
+    helpers.safe(function() detail.copyShow:SetSize(200, H.BTN_H); detail.copyShow.hidden = true end)
+    helpers.track(detail.copyShow, "content", 6)
+    helpers.setTip(detail.copyShow, TIPS.ctrl["copy show"])
+    detail.copyBg = rect(root, 0.07, 0.06, 0.05, 0.9)
+    helpers.safe(function() detail.copyBg.hidden = true; detail.copyBg:MoveToBack() end)
+    detail.copy = helpers.input(root, 0, 0, 200, H.BTN_H, "")
+    helpers.safe(function() detail.copy.hidden = true end)
+    helpers.setTip(detail.copy, "Full copy-ready text: click, select all, copy. It goes back to the short view when you pick another row.")
+    detail.copySel = helpers.button(root, 0, 0, 56, H.BTN_H, "Select", function() detail.editing = not detail.editing; refresh() end)
+    helpers.safe(function() detail.copySel.hidden = true end)
+    helpers.setTip(detail.copySel, TIPS.ctrl["Select"])
+    R("copy field", "InputField", detail.copy); R("copy text", "Text", detail.copyShow); R("copy select", "Button", detail.copySel)
+
+    tbl = Table.new(root, R)
+    tbl.afterRow = function() refresh() end
+
+    local items = helpers.commonItems(function() refresh() end)
+    settingsUI = helpers.newSettings(root, items, 6)
+    settingsUI.onChange = function() refresh() end
+    helpers.editToggle(root, function() return state.editOpen == true end, function(v)
+        state.editOpen = v; save(); layout(); helpers.refit()
+    end)
+    if state.tab < 1 or state.tab > #TABS then state.tab = 1 end
+    layout(); helpers.refit()
+end
+
+-------------------------------------------------------------------------------
+-- Ticks
+-------------------------------------------------------------------------------
+local window = nil
+local lastQ = {}
+local function polled(key, f, maxLen, onChange)
+    local t = readField(f, maxLen)
+    if t ~= lastQ[key] then lastQ[key] = t; onChange(t); return true end
+    return false
+end
+helpers.subscribe(PLUGIN_NAME, "Logic", "rdtLogic", function()
+    ticks = ticks + 1
+    helpers.tickToast()
+    if window == nil or root == nil then return end
+    -- background scans (only once the tab has been opened)
+    if browserReady then scanStep(state.set) end
+    if sndReady then sndScan(); if sndSweep() and state.tab == T_AUDIO then refresh() end end
+    local w = nil
+    pcall(function() w = root.width end)
+    if w ~= nil and w ~= lastW and not helpers.isResizing() then
+        if lastW ~= nil then refresh() end
+        lastW = w
+    end
+    if ticks % 500 == 0 then pcall(leakCheck) end
+    if ticks % 10 == 0 then
+        if helpers.isCollapsed() then return end
+        local tab = state.tab
+        if tab == T_BROWSE then polled("br", brSearch, 64, function(t) br.q = t; brFilter(); tbl.page = 1 end)
+        elseif tab == T_AUDIO then polled("snd", sndSearch, 64, function(t) snd.q = t; sndFilter(); tbl.page = 1 end)
+        elseif tab == T_FAQ or tab == T_SET or tab == T_API or tab == T_FIT or tab == T_RELOAD then
+            local f = ({ [T_FAQ] = faqField, [T_SET] = setField, [T_API] = api.field, [T_FIT] = fitField, [T_RELOAD] = slugField })[tab]
+            polled("f" .. tab, f, 120, function() tbl.page = 1 end)
+        end
+        if tab == T_UI and frozen then return end
+        refresh()
+    end
+end)
+
+local function tryCreateWindow()
+    if window ~= nil then return end
+    window = helpers.createWindow(PLUGIN_NAME, 480, 200, 0.30, 0.15)
+    if window ~= nil then
+        local ok = guarded("building panel", buildPanel, window)
+        helpers.raiseGrip()
+        if not ok then helpers.log("[" .. PLUGIN_NAME .. "] ERROR building panel") end
+        pcall(leakCheck)
+    end
+end
+
+tryCreateWindow()
+
+local retryTicks = 0
+helpers.subscribe(PLUGIN_NAME, "Logic", "windowRetry", function()
+    if window == nil then
+        retryTicks = retryTicks + 1
+        if retryTicks >= 50 then retryTicks = 0; tryCreateWindow() end
+    end
+end)
+
+helpers.installRibbon(PLUGIN_NAME)
+helpers.log("[" .. PLUGIN_NAME .. "] loaded")
+
+function PluginShutdown()
+    FaqDialog.close()
+    sndStopAll()
+    save()
+    helpers.destroyToast()
+    helpers.destroyWindow()
+end

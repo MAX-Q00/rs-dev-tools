@@ -1,0 +1,11 @@
+{
+  "name": "RS Dev Tools",
+  "version": "0.2.6",
+  "contactEmailAddress": "Dylan@quspace.agency",
+  "requiredDependencies": {},
+  "optionalDependencies": {},
+  "requiredPermissions": [],
+  "optionalPermissions": [],
+  "dependencies": {},
+  "hasRibbonIcon": true
+}
