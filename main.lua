@@ -32,7 +32,7 @@
 local PLUGIN_NAME = "RS Dev Tools"
 local SLUG = "rs-dev-tools"
 local helpers = require("ui_helpers")
-helpers.VERSION = "0.2.9"
+helpers.VERSION = "0.2.10"
 local H = helpers
 local Table = require("dt_table")
 local FaqDialog = require("faq_dialog")
