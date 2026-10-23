@@ -32,7 +32,7 @@
 local PLUGIN_NAME = "RS Dev Tools"
 local SLUG = "rs-dev-tools"
 local helpers = require("ui_helpers")
-helpers.VERSION = "0.2.6"
+helpers.VERSION = "0.2.7"
 local H = helpers
 local Table = require("dt_table")
 local FaqDialog = require("faq_dialog")
@@ -166,11 +166,15 @@ local function perfReset()
     perf.secStart = 0
 end
 perfReset()
+-- 0.2.7: the new tabs live in one table (the main chunk is at the 200-local
+-- limit). hook holds the Resource Monitor draw / server / cost callbacks.
+local NT = { T_SUB = 16, T_RES = 17, hook = {} }
 local function onDraw(e)
     local dt = nil
     pcall(function() dt = e.timeDeltaSecs end)
     if type(dt) ~= "number" or dt <= 0 or dt > 5 then return end
     perf.drawTime = perf.drawTime + dt
+    if NT.hook.draw then NT.hook.draw(dt) end
     local f = perf.frames
     f[#f + 1] = dt
     if #f > 300 then table.remove(f, 1) end
@@ -183,6 +187,7 @@ local function onServer()
     if perf.srvLast ~= nil then
         local g = perf.srvGaps
         g[#g + 1] = perf.drawTime - perf.srvLast
+        if NT.hook.server then NT.hook.server(perf.drawTime - perf.srvLast) end
         if #g > 50 then table.remove(g, 1) end
     end
     perf.srvLast = perf.drawTime
@@ -191,7 +196,11 @@ end
 for _, name in ipairs(EVENTS) do
     helpers.subscribe(PLUGIN_NAME, name, "rdtMon" .. name, function(e)
         onEvent(name, e)
-        if name == "Draw" then onDraw(e) elseif name == "ServerLogic" then onServer() end
+        if name == "Draw" then
+            local t0 = perf.hasClock and os.clock() or nil
+            onDraw(e)
+            if t0 and NT.hook.cost then NT.hook.cost(os.clock() - t0) end
+        elseif name == "ServerLogic" then onServer() end
     end)
 end
 
@@ -206,21 +215,21 @@ local function R(name, kind, c) if c ~= nil then reg[#reg + 1] = { name = name, 
 -------------------------------------------------------------------------------
 local TABS = { "UI Inspector", "Plugin Analyser", "Event Monitor", "Sprite Browser", "Audio",
     "Settings", "Perf Meter", "Layout Grid", "Text Fit", "Reload Helper", "Help/FAQ",
-    "Diagnostics", "Error Log", "API Explorer", "Commands" }
+    "Diagnostics", "Error Log", "API Explorer", "Commands", "Submission Check", "Resource Monitor" }
 local T_UI, T_PLUG, T_EV, T_BROWSE, T_AUDIO, T_SET, T_PERF, T_GRID, T_FIT, T_RELOAD, T_FAQ = 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11
 local T_DIAG, T_ERR, T_API, T_CMD = 12, 13, 14, 15
 -- 0.2.6 (review): 5 categories in one row, the category's tabs underneath.
 local CATG = {}
 CATG.CATS = {
-    { name = "Inspect", tabs = { T_UI, T_EV, T_PERF, T_GRID, T_FIT } },
-    { name = "Plugins", tabs = { T_PLUG, T_SET, T_RELOAD } },
+    { name = "Inspect", tabs = { T_UI, T_EV, T_PERF, NT.T_RES, T_GRID, T_FIT } },
+    { name = "Plugins", tabs = { T_PLUG, NT.T_SUB, T_SET, T_RELOAD } },
     { name = "Assets",  tabs = { T_BROWSE, T_AUDIO } },
     { name = "Debug",   tabs = { T_DIAG, T_ERR, T_API, T_CMD } },
     { name = "Help",    tabs = { T_FAQ } },
 }
 CATG.TIP = {
-    Inspect = "Look at this panel and the client: UI Inspector, Event Monitor, Perf Meter, Layout Grid, Text Fit.",
-    Plugins = "Plugin tools: Plugin Analyser, Settings, Reload Helper.",
+    Inspect = "Look at this panel and the client: UI Inspector, Event Monitor, Perf Meter, Resource Monitor (live graphs), Layout Grid, Text Fit.",
+    Plugins = "Plugin tools: Plugin Analyser, Submission Check, Settings, Reload Helper.",
     Assets = "Game assets: Sprite Browser (sprites, items, cursors) and Audio.",
     Debug = "Diagnostics, Error Log, API Explorer and console Commands.",
     Help = "Help and FAQ from the plugin developer Discord.",
@@ -1594,8 +1603,380 @@ viewCmd = function()
 end
 end
 
+;(function()   -- own function scope: the main chunk is at the 200-local limit
+
+-------------------------------------------------------------------------------
+-- 16. Submission Check (0.2.7)
+--     Rules that get plugins sent back by Jagex / mod.io moderation, from the
+--     official Submission process and Plugin guidelines pages, the plugin
+--     developer Discord research (Help/FAQ) and our release checklist.
+--     Each rule says how it is checked:
+--       Live   - tested right now in this client (only what the API exposes)
+--       Script - needs the plugin's files; run release/check_submission.py
+--                (plugins have no file API and cannot list or read other
+--                plugins, so these are never guessed in game)
+--       Manual - needs a person (behaviour, mod.io form fields)
+--     Display only: nothing is changed, clicked or sent.
+-------------------------------------------------------------------------------
+local sub = { target = 1, sel = nil }
+local SCRIPT_CMD = "python release/check_submission.py PLUGIN_FOLDER --desc DESCRIPTION.txt"
+-- { area, rule, mode, fix, live check (returns "pass"|"warn"|"fail", reason) }
+local SUB_RULES = {
+    { "Manifest", "plugin.json is valid JSON (no trailing commas)", "Script", "Remove the comma before the closing } or ] (FAQ 5)." },
+    { "Manifest", "name set, 1-50 ASCII characters", "Script", "Shorten the name or remove non-ASCII characters." },
+    { "Manifest", "version uses digits and dots only", "Live", "Use a version like 1.2.3 in plugin.json and on mod.io.",
+        function()
+            local v = tostring(helpers.VERSION or "")
+            if v:match("^%d+[%.%d]*$") and not v:find("%.%.") and not v:find("%.$") then return "pass", "code version " .. v .. " (plugin.json itself: Script)" end
+            return "fail", "code version '" .. plain(v) .. "' is not digits and dots"
+        end },
+    { "Manifest", "contactEmailAddress present (legal requirement)", "Script", "Add a dedicated plugin email (FAQ 10)." },
+    { "Manifest", "requiredPermissions empty; permissions are httpAccess / chatAccess / trackingAccess", "Script", "Move permissions to optionalPermissions (FAQ 1)." },
+    { "Manifest", "dependencies are objects keyed to mod.io ID numbers", "Script", "Replace names with mod.io IDs before upload (FAQ 9)." },
+    { "Files", "main.lua and plugin.json at the zip root", "Script", "Zip the folder's contents, not the folder." },
+    { "Files", "no executables, scripts or hidden/system folders", "Script", "Remove .exe .dll .bat .sh .git __MACOSX .DS_Store and similar." },
+    { "Files", "image resources at most 1024 x 1024", "Script", "Resize the PNG." },
+    { "Files", "every .lua file compiles", "Script", "Fix the syntax error luac reports." },
+    { "Code", "PluginShutdown cleans up", "Live", "Define PluginShutdown and destroy library-made components (FAQ 13).",
+        function()
+            if type(rawget(_G, "PluginShutdown")) == "function" then return "pass", "PluginShutdown is defined" end
+            return "fail", "no global PluginShutdown function"
+        end },
+    { "Code", "no component leak (4096 dynamic ID limit)", "Live", "Call layer:DeleteAll() before rebuilding; destroy in PluginShutdown (FAQ 13).",
+        function()
+            pcall(leakCheck)
+            if leak.last == nil then return "warn", "plugin layer not readable" end
+            local grew = leak.base and (leak.last.t - leak.base.t) or 0
+            if leak.last.t >= 4096 * 0.8 then return "fail", commas(leak.last.t) .. " of 4,096 components on the shared layer" end
+            if grew > 200 then return "warn", "layer grew by " .. grew .. " since load" end
+            return "pass", commas(leak.last.t) .. " components on the shared layer, +" .. math.max(0, grew) .. " since load"
+        end },
+    { "Code", "no errors in this plugin's callbacks", "Live", "Open Error Log, fix each trace. Moderators run the plugin; errors read as broken.",
+        function()
+            if #errlog == 0 then return "pass", "no errors captured since load" end
+            return "fail", #errlog .. " error(s) in the Error Log"
+        end },
+    { "Code", "every event subscription works", "Live", "Check event names against the Events docs.",
+        function()
+            local bad = 0
+            for _, v in pairs(subs) do if v == false then bad = bad + 1 end end
+            return bad == 0 and "pass" or "fail", bad == 0 and "all subscriptions succeeded" or (bad .. " subscription(s) failed")
+        end },
+    { "Code", "chat use declares chatAccess", "Live", "Add chatAccess to optionalPermissions, a permission tag and a Permissions paragraph.",
+        function()
+            if subs.ChatMessage ~= nil then return "warn", "ChatMessage is subscribed: needs chatAccess, tag and description" end
+            return "pass", "ChatMessage not subscribed"
+        end },
+    { "Behaviour", "sends no actions or input to the game", "Live", "Remove anything that sends input, menu actions or commands (Prohibited).",
+        function()
+            if cmd and cmd.hist and #cmd.hist > 0 then return "warn", "Commands tab ran " .. #cmd.hist .. " console command(s) this session (user clicks only)" end
+            return "warn", "Commands tab can send console commands on a click; flagged on JAGEX-CHECKLIST as a review risk"
+        end },
+    { "Behaviour", "frame cost stays small", "Live", "Refresh less often; cache rows; only lay out the visible tab.",
+        function()
+            if not perf.hasClock then return "warn", "os.clock missing: not measurable" end
+            local c, s = perf.cost, 0
+            if #c == 0 then return "warn", "no refresh timed yet" end
+            for _, d in ipairs(c) do s = s + d end
+            local ms = s / #c * 1000
+            return ms < 4 and "pass" or "warn", fmt(ms, 2) .. " ms per refresh (advisory limit 4 ms; not an official number)"
+        end },
+    { "Code", "readable, commented, not obfuscated (AI policy)", "Script", "Comment intent; no load/loadstring/string.dump tricks or minified lines." },
+    { "Code", "console commands, HTTP, chat, menu use flagged for review", "Script", "Explain each in the description; expect extra review." },
+    { "Listing", "EULA statement word for word", "Script", "Paste the exact statement from the Submission process page." },
+    { "Listing", "Email, Feedback and collaboration, Permissions, Data Protection sections", "Script", "Add each required section (Submission process page)." },
+    { "Listing", "no angle brackets in the description; under 50,000 characters", "Script", "Remove the characters; shorten." },
+    { "Listing", "summary 10-250 ASCII; listing image 16:9 at least 512 x 288", "Script", "Pass --summary and --logo to the script." },
+    { "Listing", "mod.io file version matches plugin.json and is new", "Manual", "Bump version in plugin.json; enter the same on upload." },
+    { "Listing", "contact email differs from your mod.io login email", "Manual", "Use a dedicated, forwarded address." },
+    { "Listing", "all platforms ticked; submitted Hidden; permission tags added", "Manual", "Follow the upload form (Submission process, Step 4)." },
+    { "Listing", "required dependency also set on mod.io; optional ones not", "Manual", "Match mod.io Dependencies to requiredDependencies." },
+    { "Behaviour", "no automation, hidden or future info, combat prediction, click-zone changes", "Manual", "Compare every feature with the Prohibited list in the guidelines." },
+    { "Behaviour", "no info exported about other players; not a copy of another plugin", "Manual", "Remove the feature; credit and ask permission." },
+    { "Listing", "documentation clear to a brand new player", "Manual", "Rewrite the description step by step." },
+}
+local function subPanelRules(w)
+    local rows = {}
+    local n, off, zero = #w.flat, 0, 0
+    local sw, sh = nil, helpers.screenH()
+    pcall(function() sw = helpers.ensureHoverLayer().width end)
+    for _, e in ipairs(w.flat) do
+        if e.r and e.r.w == 0 and e.r.h == 0 then zero = zero + 1 end
+        if e.r and sw and sh and (e.r.x + e.r.w < 0 or e.r.y + e.r.h < 0 or e.r.x > sw or e.r.y > sh) and not e.r.hidden then off = off + 1 end
+    end
+    rows[#rows + 1] = { "Layer", "panel share of the 4096 ID limit", "Live", "Reuse components instead of creating new ones each refresh.",
+        function() local p = math.floor(n * 100 / 4096); return p < 25 and "pass" or "warn", n .. " components (" .. p .. "% of 4,096)" end }
+    rows[#rows + 1] = { "Layer", "no shown components off screen", "Live", "Clamp the panel to the game window.",
+        function() return off == 0 and "pass" or "warn", off .. " shown component(s) outside the window" end }
+    rows[#rows + 1] = { "Layer", "panel inside the game window", "Live", "Clamp position on load and resize.",
+        function()
+            local r = w.r
+            if r == nil or sw == nil or sh == nil then return "warn", "position not readable" end
+            local inside = r.x >= 0 and r.y >= 0 and r.x + r.w <= sw and r.y + r.h <= sh
+            return inside and "pass" or "warn", "at " .. r.x .. ", " .. r.y .. " size " .. r.w .. " x " .. r.h
+        end }
+    rows[#rows + 1] = { "Layer", "zero-size components (possible leftovers)", "Live", "Destroy unused components rather than shrinking them.",
+        function() return zero < 20 and "pass" or "warn", zero .. " zero-size component(s)" end }
+    rows[#rows + 1] = { "All", "files, manifest, code and listing", "Script", "This plugin's files cannot be read from inside the game." }
+    rows[#rows + 1] = { "All", "behaviour and listing rules", "Manual", "See the rules under 'This plugin'." }
+    return rows
+end
+local function subTargets()
+    local L = { { name = PLUGIN_NAME .. " (this plugin)" } }
+    for _, w in ipairs(plug.wins) do
+        if not w.own then L[#L + 1] = { name = "Panel: " .. (w.title ~= "" and nice(w.title) or ("#" .. w.idx)), w = w } end
+    end
+    return L
+end
+local function viewSub()
+    if plug.at == nil then pcall(plugScan) end
+    local T = subTargets()
+    if sub.target > #T then sub.target = 1 end
+    local t = T[sub.target]
+    local rules = t.w and subPanelRules(t.w) or SUB_RULES
+    local rows, cnt = {}, { pass = 0, warn = 0, fail = 0, Script = 0, Manual = 0 }
+    for _, r in ipairs(rules) do
+        local res, why
+        if r[3] == "Live" and r[5] then
+            local ok, a, b = pcall(r[5])
+            if ok then res, why = a, b else res, why = "warn", "check failed: " .. untag(a) end
+            cnt[res] = (cnt[res] or 0) + 1
+        else
+            res = r[3]; why = r[3] == "Script" and "needs the files: run release/check_submission.py (command in Copy)" or "check by hand before upload"
+            cnt[r[3]] = cnt[r[3]] + 1
+        end
+        local resC = res == "pass" and H.col(H.C_GOOD, "pass") or res == "fail" and H.col(H.C_BAD, "fail")
+            or res == "warn" and H.col(H.C_WARN, "warn") or H.lbl(res == "Script" and "script" or "manual check")
+        rows[#rows + 1] = { H.val(r[1]), H.val(r[2]), H.lbl(r[3]), resC, H.lbl(plain(why)),
+            tip = r[2] .. ". " .. r[3] .. " check: " .. plain(why) .. ". Fix: " .. r[4], r = r, why = why, res = res }
+    end
+    return { cols = { { title = "Area", w = 64 }, { title = "Rule", flex = 3, min = 120 }, { title = "How", w = 52 },
+            { title = "Result", w = 84 }, { title = "Reason", flex = 2, min = 80 } },
+        data = arr(rows),
+        onRow = function(i) sub.sel = rows[i]; tbl.selected = i end,
+        detail = function()
+            local s = sub.sel
+            local head = H.gold(plain(t.name)) .. H.lbl("   live: ") .. H.col(H.C_GOOD, cnt.pass .. " pass ") .. H.col(H.C_WARN, cnt.warn .. " warn ")
+                .. H.col(H.C_BAD, cnt.fail .. " fail") .. H.lbl("   script " .. cnt.Script .. ", manual " .. cnt.Manual)
+            if s == nil then return { lines = { head, H.lbl("Click a rule for its reason and fix. Script rules: run the command in the Copy box on the plugin folder.") }, copy = SCRIPT_CMD } end
+            local L = { head, H.val(plain(s.r[2])) }
+            for _, l in ipairs(wrap("Reason: " .. plain(s.why), areaW() - 8, 2)) do L[#L + 1] = H.lbl(l) end
+            for _, l in ipairs(wrap("Fix: " .. s.r[4], areaW() - 8, 2)) do L[#L + 1] = H.val(l) end
+            return { lines = L, copy = s.r[3] == "Script" and SCRIPT_CMD or (s.r[2] .. ": " .. plain(s.why)) }
+        end }
+end
+
+-------------------------------------------------------------------------------
+-- 17. Resource Monitor (0.2.7)
+--     Every performance value the plugin API exposes, sampled once a second
+--     (every 50 logic ticks) into a rolling window and drawn as line graphs.
+--     Sources (docs: Events page, Lua 5.4 manual):
+--       Draw.timeDeltaSecs   -> FPS, frame time avg / worst per second
+--       Logic events         -> logic ticks per second (target 50)
+--       ServerLogic events   -> server tick interval (target 600 ms)
+--       collectgarbage("count") -> this plugin's Lua heap (KB), if present
+--       os.clock             -> this plugin's refresh and handler cost
+--       shared plugin layer  -> component count vs the 4096 ID limit
+--       Event counters       -> events per second
+--       game.options         -> frame-rate caps and VSync (read only)
+--     Not exposed by the API: GPU, process memory or CPU, other plugins'
+--     timings, network ping, draw calls.
+-------------------------------------------------------------------------------
+local mon = { win = 60, set = 1, hist = {}, acc = { n = 0, sum = 0, worst = 0, logic = 0, srv = 0, srvGap = 0, srvN = 0, ev = 0, hcost = 0 },
+    overhead = {}, drawn = nil, hasGC = false }
+pcall(function() mon.hasGC = type(collectgarbage) == "function" and type(collectgarbage("count")) == "number" end)
+-- { key, label, unit, decimals, source, tip }
+local MON_METRICS = {
+    { "fps", "FPS", "", 1, "Draw.timeDeltaSecs", "Frames drawn per second: 1 / average frame time over the last second." },
+    { "ft", "Frame time avg", "ms", 2, "Draw.timeDeltaSecs", "Average time between Draw events in the last second." },
+    { "ftmax", "Frame time worst", "ms", 1, "Draw.timeDeltaSecs", "Longest single frame in the last second: stutters show here." },
+    { "logic", "Logic ticks / s", "", 1, "Event.Logic", "Logic events counted in the last second of Draw time. The client targets 50." },
+    { "srv", "Server tick interval", "ms", 0, "Event.ServerLogic", "Average gap between ServerLogic events (game tick, target 600 ms). Not network ping." },
+    { "mem", "Lua heap (this plugin)", "KB", 0, "collectgarbage('count')", "Memory used by this plugin's Lua state. Other plugins are separate and not visible." },
+    { "cost", "Refresh cost (this plugin)", "ms", 2, "os.clock", "Average CPU time of this panel's refresh in the last second." },
+    { "hcost", "Event handler cost (this plugin)", "ms/s", 2, "os.clock", "CPU time spent in this plugin's own Draw/Logic monitor code per second." },
+    { "layer", "Plugin layer components", "", 0, "ui layer walk", "Components on the shared plugin layer (all plugins), against the 4096 ID limit." },
+    { "own", "This plugin's components", "", 0, "own registry", "Components this plugin created." },
+    { "evs", "Events / s (non-tick)", "", 0, "Event counters", "Events other than Logic, ServerLogic and Draw per second: entity, inventory, var changes." },
+    { "ovh", "Monitor overhead", "ms", 3, "os.clock", "CPU time this tab's own sampling took last second (graphs drawn separately)." },
+}
+local MON_IDX = {}
+for i, m in ipairs(MON_METRICS) do MON_IDX[m[1]] = i end
+local MON_SETS = {
+    { name = "Frames", keys = { "fps", "ftmax" } },
+    { name = "Ticks", keys = { "logic", "srv" } },
+    { name = "Memory", keys = { "mem", "layer" } },
+    { name = "Cost", keys = { "cost", "hcost" } },
+}
+local MON_MAXWIN = 120
+local GR_H = 52
+local gr = { }   -- graph pieces, built in buildPanel
+-- per-frame accumulation (called from the existing Draw handler; a few adds)
+local function monDraw(dt)
+    local a = mon.acc
+    a.n = a.n + 1; a.sum = a.sum + dt
+    if dt > a.worst then a.worst = dt end
+end
+local function monServer(gap) local a = mon.acc; a.srvGap = a.srvGap + gap; a.srvN = a.srvN + 1 end
+local lastEvTotal = 0
+local function monSample()
+    local t0 = nil
+    if perf.hasClock then pcall(function() t0 = os.clock() end) end
+    local a, s = mon.acc, {}
+    if a.n > 0 then s.fps = a.n / a.sum; s.ft = a.sum / a.n * 1000; s.ftmax = a.worst * 1000; s.logic = 50 / a.sum end
+    if a.srvN > 0 then s.srv = a.srvGap / a.srvN * 1000 end
+    if mon.hasGC then pcall(function() s.mem = collectgarbage("count") end) end
+    if perf.hasClock then
+        local c, cs, cn = perf.cost, 0, 0
+        for i = math.max(1, #c - 4), #c do cs = cs + c[i]; cn = cn + 1 end
+        if cn > 0 then s.cost = cs / cn * 1000 end
+        s.hcost = a.hcost * 1000
+    end
+    if leak.last then s.layer = leak.last.t end
+    s.own = #reg
+    local tot = 0
+    for k, v in pairs(ev.counts) do if not TICKY[k] then tot = tot + v end end
+    s.evs = math.max(0, tot - lastEvTotal); lastEvTotal = tot
+    s.ovh = mon.lastOvh
+    local h = mon.hist
+    h[#h + 1] = s
+    if #h > MON_MAXWIN then table.remove(h, 1) end
+    mon.acc = { n = 0, sum = 0, worst = 0, srvGap = 0, srvN = 0, hcost = 0 }
+    if t0 then pcall(function() mon.lastOvh = (os.clock() - t0) * 1000 end) end
+end
+local function monStats(key)
+    local h, mn, mx, sum, n = mon.hist, nil, nil, 0, 0
+    for i = math.max(1, #h - mon.win + 1), #h do
+        local v = h[i][key]
+        if type(v) == "number" then n = n + 1; sum = sum + v; mn = (mn == nil or v < mn) and v or mn; mx = (mx == nil or v > mx) and v or mx end
+    end
+    local cur = #h > 0 and h[#h][key] or nil
+    return cur, mn, n > 0 and sum / n or nil, mx, n
+end
+local function mfmt(m, v) if type(v) ~= "number" then return "-" end; return fmt(v, m[4]) .. (m[3] ~= "" and (" " .. m[3]) or "") end
+local function placeGraphs(y)
+    local show = state.tab == NT.T_RES and y ~= nil and gr.bg ~= nil
+    if not show and mon.drawn == "hidden" then return 0 end   -- already hidden: no work
+    for g = 1, 2 do
+        local G = gr[g]
+        if G then helpers.setHidden({ G.bg, G.title, G.ymax, G.ymin, G.x0, G.x1, G.mid }, not show)
+            if not show then for i = 1, MON_MAXWIN do helpers.setHidden({ G.seg[i] }, true) end end
+        end
+    end
+    if not show then mon.drawn = gr.bg and "hidden" or nil; return 0 end
+    local w = areaW()
+    local set = MON_SETS[mon.set]
+    local AX = 40   -- room for the y-axis labels
+    local key = mon.set .. ":" .. #mon.hist .. ":" .. y .. ":" .. w .. ":" .. mon.win .. ":" .. tostring(mon.hist[#mon.hist])
+    local total = 2 * (GR_H + H.ROW_HEIGHT + 18)
+    if mon.drawn == key then return total end
+    mon.drawn = key
+    for g = 1, 2 do
+        local G, m = gr[g], MON_METRICS[MON_IDX[set.keys[g]]]
+        local gy = y + (g - 1) * (GR_H + H.ROW_HEIGHT + 18)
+        local cur, mn, avg, mx = monStats(m[1])
+        helpers.safe(function() G.title:SetPos(H.PAD, gy); G.title:SetSize(w, H.ROW_HEIGHT) end)
+        helpers.setText(G.title, H.gold(m[2]) .. H.lbl("  now ") .. H.val(mfmt(m, cur)) .. H.lbl("  min ") .. H.val(mfmt(m, mn))
+            .. H.lbl("  avg ") .. H.val(mfmt(m, avg)) .. H.lbl("  max ") .. H.val(mfmt(m, mx)))
+        helpers.setTip(G.title, m[6] .. " Source: " .. m[5] .. ".")
+        local top = gy + H.ROW_HEIGHT
+        local gw = w - AX
+        helpers.safe(function() G.bg:SetPos(H.PAD + AX, top); G.bg:SetSize(gw, GR_H); G.mid:SetPos(H.PAD + AX, top + math.floor(GR_H / 2)); G.mid:SetSize(gw, 1) end)
+        -- y range: padded min..max of the window so small changes stay visible
+        local lo, hi = mn or 0, mx or 1
+        if hi - lo < 1e-6 then lo, hi = lo - 1, hi + 1 end
+        local pad = (hi - lo) * 0.1; lo, hi = math.max(0, lo - pad), hi + pad
+        helpers.safe(function()
+            G.ymax:SetPos(H.PAD, top - 4); G.ymax:SetSize(AX - 2, H.ROW_HEIGHT)
+            G.ymin:SetPos(H.PAD, top + GR_H - H.ROW_HEIGHT + 4); G.ymin:SetSize(AX - 2, H.ROW_HEIGHT)
+            G.x0:SetPos(H.PAD + AX, top + GR_H); G.x0:SetSize(80, 16)
+            G.x1:SetPos(H.PAD + AX + gw - 30, top + GR_H); G.x1:SetSize(30, 16)
+        end)
+        helpers.setText(G.ymax, H.lbl(fmt(hi, hi < 10 and 1 or 0)))
+        helpers.setText(G.ymin, H.lbl(fmt(lo, hi < 10 and 1 or 0)))
+        helpers.setText(G.x0, H.lbl("-" .. mon.win .. " s"))
+        helpers.setText(G.x1, H.lbl("now"))
+        -- line: one column per sample; a 2 px segment from the previous value
+        -- to this one, so the trace is continuous
+        local h = mon.hist
+        local first = math.max(1, #h - mon.win + 1)
+        local step = gw / math.max(1, mon.win - 1)
+        local prevY = nil
+        for i = 1, MON_MAXWIN do
+            local idx = first + i - 1
+            local v = i <= mon.win and h[idx] and h[idx][m[1]] or nil
+            local seg = G.seg[i]
+            if type(v) ~= "number" then helpers.setHidden({ seg }, true); prevY = nil
+            else
+                local py = top + GR_H - 1 - math.floor((v - lo) / (hi - lo) * (GR_H - 2))
+                local slot = mon.win - (#h - idx) - 1  -- right-aligned: newest at "now"
+                local px = H.PAD + AX + math.floor(slot * step)
+                local y1, y2 = py, prevY or py
+                if y2 < y1 then y1, y2 = y2, y1 end
+                helpers.safe(function() seg.hidden = false; seg:SetPos(px, y1); seg:SetSize(2, y2 - y1 + 2) end)
+                prevY = py
+            end
+        end
+    end
+    return total
+end
+local function viewRes()
+    local rows = {}
+    for _, m in ipairs(MON_METRICS) do
+        local cur, mn, avg, mx, n = monStats(m[1])
+        local na = n == 0
+        local why = nil
+        if na then
+            if (m[5] == "os.clock") and not perf.hasClock then why = "os.clock missing"
+            elseif m[1] == "mem" and not mon.hasGC then why = "collectgarbage missing"
+            elseif m[1] == "layer" then why = "layer not readable"
+            else why = "waiting" end
+        end
+        local graphed = false
+        for _, st in ipairs(MON_SETS) do for _, k in ipairs(st.keys) do if k == m[1] then graphed = st.name end end end
+        rows[#rows + 1] = { H.val(m[2]), na and H.lbl(why) or H.val(mfmt(m, cur)), H.lbl(mfmt(m, mn)), H.lbl(mfmt(m, avg)), H.lbl(mfmt(m, mx)),
+            H.lbl(m[5]), tip = m[6] .. " Source: " .. m[5] .. "." .. (graphed and (" Graphed in the " .. graphed .. " set.") or " Table only.") }
+    end
+    -- read-only client settings that cap performance
+    for _, o in ipairs({ "MaxForegroundFps", "MaxBackgroundFps", "VSync" }) do
+        local v = nil
+        pcall(function() v = game.options[o].setting end)
+        rows[#rows + 1] = { H.val("game.options." .. o), H.val(v ~= nil and tostring(v) or "-"), H.lbl(""), H.lbl(""), H.lbl(""), H.lbl("game.options (read)"),
+            tip = "Client setting that caps or syncs the frame rate; read only, never changed." }
+    end
+    for _, s in ipairs({ { "GPU / process memory / CPU", "no API" }, { "Network ping", "no API" }, { "Other plugins' timings", "no API" }, { "Draw calls", "no API" } }) do
+        rows[#rows + 1] = { H.lbl(s[1]), H.col(H.C_WARN, "not available"), H.lbl(""), H.lbl(""), H.lbl(""), H.lbl(s[2]),
+            tip = "The plugin API exposes no way to read this, so it is not shown rather than guessed." }
+    end
+    return { cols = { { title = "Metric", flex = 2, min = 110 }, { title = "Now", w = 70 }, { title = "Min", w = 60 }, { title = "Avg", w = 60 },
+            { title = "Max", w = 60 }, { title = "Source", flex = 1, min = 70 } },
+        data = arr(rows),
+        detail = function()
+            local o = mon.lastOvh
+            return { lines = { H.lbl("Sampled once a second over the last " .. mon.win .. " s (" .. #mon.hist .. " samples). Monitor overhead: ")
+                .. H.val(o and (fmt(o, 3) .. " ms/s") or "-") .. H.lbl(", graphs redrawn once a second only while this tab is open.") } }
+        end }
+end
+
+NT.sub = sub
+NT.subTargets = subTargets
+NT.viewSub = viewSub
+NT.mon = mon
+NT.MON_SETS = MON_SETS
+NT.MON_MAXWIN = MON_MAXWIN
+NT.gr = gr
+NT.monDraw = monDraw
+NT.monServer = monServer
+NT.monSample = monSample
+NT.placeGraphs = placeGraphs
+NT.viewRes = viewRes
+end)()
+NT.hook.draw = NT.monDraw
+NT.hook.server = NT.monServer
+NT.hook.cost = function(d) NT.mon.acc.hcost = (NT.mon.acc.hcost or 0) + d end
+
 local VIEWS = { viewUI, viewPlug, viewEvents, viewBrowse, viewAudio, viewSettings, viewPerf, viewGrid, viewFit, viewReload, viewFaq,
-    viewDiag, viewErrors, viewApi, viewCmd }
+    viewDiag, viewErrors, viewApi, viewCmd, NT.viewSub, NT.viewRes }
 local JUMPS = {}   -- 0.2.6: every tab gets the full pager
 
 -------------------------------------------------------------------------------
@@ -1719,6 +2100,7 @@ layout = function()
     if n > 0 or pv or hasCopy then y = y + 6 end
     if state.tab == T_GRID then placeGrid(y); y = y + GRID_H + 6 else placeGrid(nil) end
     if state.tab == T_FIT then placeFit(y); y = y + H.ROW_HEIGHT + 10 else placeFit(nil) end
+    if state.tab == NT.T_RES then y = y + NT.placeGraphs(y) + 4 else NT.placeGraphs(nil) end
     -- 0.2.6: never run off the screen: fewer rows per page when the panel
     -- would reach the bottom of the game window (Commands overflowed).
     do
@@ -1922,6 +2304,43 @@ local function buildPanel(w)
     btn(T_CMD, "Cancel", 56, function() cmd.pending = nil; cmd.note = "Cancelled."; refresh() end, function() return cmd.pending ~= nil end)
     btn(T_CMD, "Clear", 52, function() cmd.hist = {}; sel[T_CMD] = nil; refresh() end, function() return cmd.mode == "history" end)
 
+    -- 16 Submission Check: target picker (this plugin, or a panel from the layer scan)
+    local subB
+    subB = btn(NT.T_SUB, "Target: this plugin", 200, function()
+        local T = NT.subTargets()
+        NT.sub.target = NT.sub.target % #T + 1; NT.sub.sel = nil
+        local n = T[NT.sub.target].name
+        setLabel(subB, "Target: " .. (NT.sub.target == 1 and "this plugin" or n:gsub("^Panel: ", "")))
+        tbl.page = 1; refresh()
+    end, nil, "__subtarget")
+    helpers.setTip(subB, "Pick what to check. This plugin gets every rule; other plugins' panels (found by Rescan) only get the layer checks, because plugins cannot read each other's files. Click to cycle.")
+    btn(NT.T_SUB, "Rescan", 60, function() pcall(plugScan); NT.sub.target = 1; NT.sub.sel = nil; setLabel(subB, "Target: this plugin"); refresh() end, nil, "__subrescan")
+    helpers.setTip(ctrls[NT.T_SUB][#ctrls[NT.T_SUB]].c, "Scan the shared plugin layer again for other plugins' panels.")
+    -- 17 Resource Monitor: graph set and window length (typed seconds, 10-120)
+    local setB
+    setB = btn(NT.T_RES, "Graphs: " .. NT.MON_SETS[NT.mon.set].name, 120, function()
+        NT.mon.set = NT.mon.set % #NT.MON_SETS + 1; NT.mon.drawn = nil
+        setLabel(setB, "Graphs: " .. NT.MON_SETS[NT.mon.set].name); refresh()
+    end, nil, "__resset")
+    helpers.setTip(setB, "Which two values to graph. Click to cycle: Frames (FPS, worst frame), Ticks (logic rate, server tick), Memory (Lua heap, layer components), Cost (refresh, Draw handler).")
+    NT.mon.field = field(NT.T_RES, 50, "60", "res window")
+    helpers.setTip(NT.mon.field, "Graph window in seconds. Type a number from 10 to 120; it applies within a second.")
+    btn(NT.T_RES, "Reset", 52, function() NT.mon.hist = {}; NT.mon.drawn = nil; refresh() end, nil, "__resreset")
+    helpers.setTip(ctrls[NT.T_RES][#ctrls[NT.T_RES]].c, "Clear the sampled history.")
+    for g = 1, 2 do
+        local G = { seg = {} }
+        G.bg = R("graph " .. g, "Rectangle", rect(root, 0.11, 0.10, 0.09, 0.94))
+        G.mid = rect(root, 0.66, 0.64, 0.60, 0.25)
+        G.title = newText(root, 200); G.ymax = newText(root, 38); G.ymin = newText(root, 38); G.x0 = newText(root, 60); G.x1 = newText(root, 30)
+        for i = 1, NT.MON_MAXWIN do
+            G.seg[i] = rect(root, g == 1 and 1.0 or 0.45, g == 1 and 0.78 or 0.80, g == 1 and 0.27 or 1.0, 1.0)
+            helpers.safe(function() G.seg[i].hidden = true; G.seg[i].clickthrough = true end)
+        end
+        helpers.setHidden({ G.bg, G.mid, G.title, G.ymax, G.ymin, G.x0, G.x1 }, true)
+        NT.gr[g] = G
+    end
+    NT.gr.bg = true
+
     -- detail view
     detail.box = R("preview box", "Rectangle", rect(root, 0.11, 0.10, 0.09, 0.94))
     pcall(function() detail.spr = ui.Sprite.new(root); detail.spr.hidden = true end)
@@ -1991,6 +2410,16 @@ helpers.subscribe(PLUGIN_NAME, "Logic", "rdtLogic", function()
         lastW = w
     end
     if ticks % 500 == 0 then pcall(leakCheck) end
+    -- 0.2.7 Resource Monitor: one sample a second, always (cheap), so the
+    -- graph has history when the tab is opened
+    if ticks % 50 == 0 then
+        if state.tab == NT.T_RES then
+            if ticks % 250 == 0 then pcall(leakCheck) end
+            local v = helpers.cleanInt(readField(NT.mon.field, 4), 10, NT.MON_MAXWIN)
+            if v and v ~= NT.mon.win then NT.mon.win = v; NT.mon.drawn = nil end
+        end
+        pcall(NT.monSample)
+    end
     if ticks % 10 == 0 then
         if helpers.isCollapsed() then return end
         local tab = state.tab

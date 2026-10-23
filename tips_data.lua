@@ -143,4 +143,15 @@ T.ctrl = {
     ["copy show"] = "The copy-ready text for the selected row. Hover to see all of it; press Select to put it in a text box you can copy from.",
     ["Select"] = "Put the full text in a text box: click it, select all, copy.",
 }
+T.tabcols["Submission Check|Rule"] = "A rule moderation checks before approving a plugin."
+T.tabcols["Submission Check|How"] = "Live: tested in this client now. Script: needs the plugin's files (release/check_submission.py). Manual: check by hand."
+T.tabcols["Submission Check|Result"] = "pass, warn or fail for Live rules; script or manual check for the rest. Nothing is guessed."
+T.tabcols["Submission Check|Reason"] = "What the check found. Hover a row for the fix."
+T.tabcols["Resource Monitor|Metric"] = "A performance value the plugin API can read. Hover for what it means."
+T.tabcols["Resource Monitor|Now"] = "The latest one-second sample."
+T.tabcols["Resource Monitor|Min"] = "Lowest sample in the graph window."
+T.tabcols["Resource Monitor|Avg"] = "Average of the samples in the graph window."
+T.tabcols["Resource Monitor|Max"] = "Highest sample in the graph window."
+T.tabcols["Resource Monitor|Source"] = "The API the value comes from."
+T.ctrl["res window"] = "Graph window in seconds. Type a number from 10 to 120."
 return T
