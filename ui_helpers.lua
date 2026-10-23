@@ -425,6 +425,7 @@ local function uiScale()
     return 1
 end
 
+helpers.uiScale = function() return uiScale() end   -- 0.5.0 (Model Sandbox)
 local function tickDrag()
     if drag == nil then return end   -- early return: no work when idle
     if helpers.common.lock then drag = nil; return end
@@ -1033,6 +1034,11 @@ function helpers.raiseWindow()
         if win.state ~= nil and win.state.collapsed and win.icon ~= nil then win.icon:MoveToFront()
         elseif win.box ~= nil then win.box:MoveToFront() end
     end)
+    if helpers.afterRaise then pcall(helpers.afterRaise) end
+end
+-- 0.5.0: unconditional raise (Model Sandbox keeps the panel above model boxes)
+function helpers.raiseFront()
+    pcall(function() if win.state ~= nil and win.state.collapsed and win.icon ~= nil then win.icon:MoveToFront() elseif win.box ~= nil then win.box:MoveToFront() end end)
     if helpers.afterRaise then pcall(helpers.afterRaise) end
 end
 function helpers.raiseOnClick(c)

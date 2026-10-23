@@ -1,3 +1,10 @@
+## RS Dev Tools 0.5.0 (2026-10-23)
+- New Assets > Model Sandbox tab: spawn client-side 3D models of NPCs, items or raw model IDs in the game view (up to 20 at once), using documented ui.Model/SetModel, ScreenConvert.Vector3ToScreen, Camera pitch and NPCType.bas.overlayHeight.
+- Search NPCs or items (Show dropdown), or type an ID, then Spawn on screen. The Item browser also has Spawn on screen for the picked item.
+- Each model: drag its small + handle to move it (anchored to a world tile, or Pin/World to pin it to the screen), Yaw -45/+45 or typed degrees, Size -/+ or typed %, animation dropdown (id.Seq names matching the NPC; NPCs start on idle) or typed anim ID, Play/Stop, Duplicate, Delete, and Clear all. The Spawned list shows name, ID, kind, tile and anim with adjustable columns.
+- Safety: model boxes are capped at 900px, click-through and disabled; the panel is re-raised whenever a model overlaps it and handles hide over the panel; every per-tick step and button is pcall-guarded. Nothing is restored at load; Save scene / Load scene only run when clicked.
+- Visual only: sends nothing to the game.
+
 ## RS Dev Tools 0.4.1 (2026-10-23)
 - Right-click menu tile coords (on by default): the open menu gets an info line at the bottom with the tile under the mouse, as level, x, z, map square and local tile. It uses the documented MiniMenu:Add with an action that does nothing, and is swapped to the lowest priority so it is never the left-click default.
 - Item hover info (on by default): hovering an item on the ground, or in the inventory, bank or equipment, shows Item Name (ID) next to the pointer in the plugin's tooltip box.

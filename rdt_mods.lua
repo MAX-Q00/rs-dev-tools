@@ -10,6 +10,7 @@ local PUBLIC = {
     { "rdt_prof", function() return require("rdt_prof") end },
     { "rdt_perms", function() return require("rdt_perms") end },
     { "rdt_cover", function() return require("rdt_cover") end },
+    { "rdt_sandbox", function() return require("rdt_sandbox") end },
 }
 local EXTRA  -- formerly Unlimited-only
 local UNLIMITED = {

@@ -25,3 +25,9 @@ Already in the normal build before 0.4.0: Event Payloads, Camera & World, Compon
 |---|---|---|---|
 | Right-click menu tile coords (MiniMenu:Add info entry, do-nothing action, swapped to lowest priority) | World (on by default; Settings toggle) | Needs review | Menu customisation. It adds an entry but never removes, hides or reorders the game's own entries relative to each other, and the entry sends nothing. List it as an info line. |
 | Item hover info: Item Name (ID) by the pointer (read from the top MiniMenu entry) | World (on by default; Settings toggle) | Likely safe | Read-only display of the item already under the pointer, similar to the game's own tooltip. |
+
+## Added in 0.5.0
+
+| Feature | Where | Status | Rule it hits |
+|---|---|---|---|
+| Model Sandbox: client-side NPC / item / model ID 3D models drawn in the game view (ui.Model on the top plugin layer), moved, rotated, sized and animated; scene save/load | Assets > Model Sandbox; Item browser Spawn on screen | Needs review | Drawing NPC models in the world can read as misleading visuals or entity spoofing. It changes nothing in the game, other players see nothing, and it does not alter or recolour player models. List it as a developer preview tool. |
