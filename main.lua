@@ -32,10 +32,14 @@
 local PLUGIN_NAME = "RS Dev Tools"
 local SLUG = "rs-dev-tools"
 local helpers = require("ui_helpers")
-helpers.VERSION = "0.2.13"
+helpers.VERSION = "0.2.14"
 local H = helpers
 local Table = require("dt_table")
 local FaqDialog = require("faq_dialog")
+-- 0.2.14: edition flag. edition.lua is { unlimited = false } in the public
+-- build; release/build_unlimited.py writes true for RS Dev Tools Unlimited.
+_RDT_UNL = false
+pcall(function() local e = require("edition"); _RDT_UNL = type(e) == "table" and e.unlimited == true end)
 local TIPS = {}
 pcall(function() TIPS = require("tips_data") or {} end)
 TIPS.cols, TIPS.tabcols, TIPS.rows, TIPS.ctrl = TIPS.cols or {}, TIPS.tabcols or {}, TIPS.rows or {}, TIPS.ctrl or {}
@@ -168,7 +172,7 @@ end
 perfReset()
 -- 0.2.7: the new tabs live in one table (the main chunk is at the 200-local
 -- limit). hook holds the Resource Monitor draw / server / cost callbacks.
-local NT = { T_SUB = 16, T_RES = 17, hook = {} }
+local NT = { T_SUB = 16, T_RES = 17, T_WORLD = 18, T_PROBE = 19, hook = {} }
 local function onDraw(e)
     local dt = nil
     pcall(function() dt = e.timeDeltaSecs end)
@@ -215,20 +219,20 @@ local function R(name, kind, c) if c ~= nil then reg[#reg + 1] = { name = name, 
 -------------------------------------------------------------------------------
 local TABS = { "UI Inspector", "Plugin Analyser", "Event Monitor", "Sprite Browser", "Audio",
     "Settings", "Perf Meter", "Layout Grid", "Text Fit", "Reload Helper", "Help/FAQ",
-    "Diagnostics", "Error Log", "API Explorer", "Commands", "Submission Check", "Resource Monitor" }
+    "Diagnostics", "Error Log", "API Explorer", "Commands", "Submission Check", "Resource Monitor", "World Render", "Probe" }
 local T_UI, T_PLUG, T_EV, T_BROWSE, T_AUDIO, T_SET, T_PERF, T_GRID, T_FIT, T_RELOAD, T_FAQ = 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11
 local T_DIAG, T_ERR, T_API, T_CMD = 12, 13, 14, 15
 -- 0.2.6 (review): 5 categories in one row, the category's tabs underneath.
 local CATG = {}
 CATG.CATS = {
-    { name = "Inspect", tabs = { T_UI, T_EV, T_PERF, NT.T_RES, T_GRID, T_FIT } },
+    { name = "Inspect", tabs = { T_UI, T_EV, T_PERF, NT.T_RES, NT.T_WORLD, T_GRID, T_FIT } },
     { name = "Plugins", tabs = { T_PLUG, NT.T_SUB, T_SET, T_RELOAD } },
     { name = "Assets",  tabs = { T_BROWSE, T_AUDIO } },
-    { name = "Debug",   tabs = { T_DIAG, T_ERR, T_API, T_CMD } },
+    { name = "Debug",   tabs = _RDT_UNL and { T_DIAG, T_ERR, T_API, T_CMD, NT.T_PROBE } or { T_DIAG, T_ERR, T_API, T_CMD } },
     { name = "Help",    tabs = { T_FAQ } },
 }
 CATG.TIP = {
-    Inspect = "Look at this panel and the client: UI Inspector, Event Monitor, Perf Meter, Resource Monitor (live graphs), Layout Grid, Text Fit.",
+    Inspect = "Look at this panel and the client: UI Inspector, Event Monitor, Perf Meter, Resource Monitor (live graphs), World Render (position and path markers), Layout Grid, Text Fit.",
     Plugins = "Plugin tools: Plugin Analyser, Submission Check, Settings, Reload Helper.",
     Assets = "Game assets: Sprite Browser (sprites, items, cursors) and Audio.",
     Debug = "Diagnostics, Error Log, API Explorer and console Commands.",
@@ -2055,8 +2059,155 @@ NT.hook.draw = NT.monDraw
 NT.hook.server = NT.monServer
 NT.hook.cost = function(d) NT.mon.acc.hcost = (NT.mon.acc.hcost or 0) + d end
 
+do
+-------------------------------------------------------------------------------
+-- 18. World Render (0.2.14): client-side debug markers (ported from Rotten
+-- Potato). Entity hiding is Unlimited-only. All off on load (not saved) and
+-- switched off in PluginShutdown. Nothing is sent to the game.
+-------------------------------------------------------------------------------
+NT.WR = { hideNpcs = false, hidePlayers = false, aura = false, trail = false, beam = false, col = 1, rad = 2,
+    pts = {}, acc = 0, myUid = nil, hidden = 0, drawOk = false, entOk = false }
+local WR = NT.WR
+WR.COLS = { { "Green", 0x55FF33FF }, { "Purple", 0xAA44FFFF }, { "Gold", 0xFFCC33FF }, { "Red", 0xFF3322FF }, { "Cyan", 0x33DDFFFF }, { "White", 0xFFFFFFFF } }
+WR.RADS = { 200, 400, 800, 1600, 3200 }
+local function wrV3(x, y, z) return Vector3.new(x, y, z) end
+local function wrRing(c, r, n)
+    local pts = {}
+    for i = 0, n do local a = (i / n) * 2 * math.pi; pts[#pts + 1] = wrV3(c.x + math.cos(a) * r, c.y, c.z + math.sin(a) * r) end
+    return pts
+end
+if _RDT_UNL then
+    WR.entOk = pcall(function()
+        Event.EntityDraw.Subscribe("rdtWorldEntity", function(ev)
+            if not (WR.hideNpcs or WR.hidePlayers) then return true end
+            local keep = true
+            pcall(function()
+                local t = ev.entityType
+                if t == EntityType.PLAYER and WR.hidePlayers then
+                    if WR.myUid == nil or ev.playerEntity.uid ~= WR.myUid then keep = false end
+                elseif t == EntityType.NPC and WR.hideNpcs then keep = false end
+            end)
+            if not keep then WR.hidden = WR.hidden + 1 end
+            return keep
+        end)
+    end)
+end
+local function wrDraw(ev)
+    if not (WR.aura or WR.trail or WR.beam or WR.hidePlayers) then if #WR.pts > 0 then WR.pts = {} end; return end
+    local e, pos = nil, nil
+    pcall(function() if Player.IsAvailable() then e = Player.GetEntity() end end)
+    if e == nil or helpers.offGame then return end
+    pcall(function() WR.myUid = e.uid; pos = e.position end)
+    if pos == nil then return end
+    local dt = 0.02
+    pcall(function() dt = ev.timeDeltaSecs or 0.02 end)
+    local col = WR.COLS[WR.col][2]
+    if WR.aura then
+        pcall(function()
+            local c, r = wrV3(pos.x, pos.y + 4, pos.z), WR.RADS[WR.rad]
+            ShapeList.DrawLine({ positions = wrRing(c, r, 32), colour = col, lineWidth = 3.0, ignoreDepth = false })
+            ShapeList.DrawLine({ positions = wrRing(c, 256, 16), colour = col, lineWidth = 2.0, ignoreDepth = false })
+        end)
+    end
+    if WR.trail then
+        WR.acc = WR.acc + dt
+        if WR.acc > 0.15 then
+            WR.acc = 0
+            local last = WR.pts[#WR.pts]
+            if last == nil or math.abs(last.x - pos.x) + math.abs(last.z - pos.z) > 32 then
+                WR.pts[#WR.pts + 1] = wrV3(pos.x, pos.y + 20, pos.z)
+                if #WR.pts > 60 then table.remove(WR.pts, 1) end
+            end
+        end
+        if #WR.pts >= 2 then pcall(function() ShapeList.DrawLine({ positions = WR.pts, colour = col, lineWidth = 4.0 }) end) end
+    elseif #WR.pts > 0 then WR.pts = {} end
+    if WR.beam then
+        pcall(function() ShapeList.DrawLine({ positions = { wrV3(pos.x, pos.y, pos.z), wrV3(pos.x, pos.y + 6000, pos.z) }, colour = col, lineWidth = 6.0 }) end)
+    end
+end
+WR.drawOk = pcall(function() Event.Draw.Subscribe("rdtWorldDraw", function(ev) pcall(wrDraw, ev) end) end)
+function WR.off() WR.hideNpcs, WR.hidePlayers, WR.aura, WR.trail, WR.beam, WR.pts = false, false, false, false, false, {} end
+function WR.shutdown()
+    WR.off()
+    pcall(function() Event.EntityDraw.Unsubscribe("rdtWorldEntity") end)
+    pcall(function() Event.Draw.Unsubscribe("rdtWorldDraw") end)
+end
+local function onOff(v) return v and H.col(H.C_GOOD, "On") or H.lbl("Off") end
+NT.viewWorld = function()
+    local rows = {}
+    if _RDT_UNL then
+        rows[#rows + 1] = { H.val("Hide NPCs"), onOff(WR.hideNpcs), H.lbl("EntityDraw returns false for NPCs; they still exist."), tip = "Client-side only: NPCs are not drawn on your screen." }
+        rows[#rows + 1] = { H.val("Hide other players"), onOff(WR.hidePlayers), H.lbl("Your own character stays visible."), tip = "Client-side only: other players are not drawn on your screen." }
+        rows[#rows + 1] = { H.val("Entities skipped"), H.lbl(commas(WR.hidden)), H.lbl("draw calls skipped since load") }
+    end
+    rows[#rows + 1] = { H.val("Position ring"), onOff(WR.aura), H.lbl("radius " .. WR.RADS[WR.rad] .. " units (512 = 1 tile) plus a half-tile ring"), tip = "Debug marker for your world position and a distance radius (ShapeList.DrawLine)." }
+    rows[#rows + 1] = { H.val("Path trail"), onOff(WR.trail), H.lbl(#WR.pts .. " of 60 points, one per 0.15 s while moving"), tip = "Debug marker for pathing: a line through where you walked." }
+    rows[#rows + 1] = { H.val("Sky beam"), onOff(WR.beam), H.lbl("vertical line above your position"), tip = "Debug marker that shows where you are from far away." }
+    rows[#rows + 1] = { H.val("APIs"), H.lbl(WR.drawOk and "Draw ok" or "Draw missing"), H.lbl("All off on load and unload. Nothing is sent to the game.") }
+    return { cols = { { title = "Option", flex = 2, min = 100 }, { title = "State", w = 60 }, { title = "Note", flex = 3, min = 80 } }, data = arr(rows) }
+end
+
+-------------------------------------------------------------------------------
+-- 19. Probe (Unlimited only): walks every global table, lists all members
+-- with their type (documented or not). "Call ()" runs a selected function
+-- with no arguments after a Confirm click and shows what it returned.
+-------------------------------------------------------------------------------
+end
+do
+NT.PR = { rows = nil, sel = nil, out = "", pending = nil, filter = "" }
+local PR = NT.PR
+local function prScan()
+    local rows = {}
+    local names = {}
+    for k, v in pairs(_G) do if type(k) == "string" then names[#names + 1] = k end end
+    table.sort(names)
+    for _, k in ipairs(names) do
+        local v = _G[k]
+        local tv = type(v)
+        if tv == "table" or tv == "userdata" then
+            local ok = pcall(function()
+                local m = {}
+                for k2, v2 in pairs(v) do if type(k2) == "string" then m[#m + 1] = { k2, type(v2) } end end
+                table.sort(m, function(a, b) return a[1] < b[1] end)
+                for _, e in ipairs(m) do rows[#rows + 1] = { k .. "." .. e[1], e[2], path = { k, e[1] } } end
+            end)
+            if not ok then rows[#rows + 1] = { k, tv .. " (not iterable)", path = { k } } end
+        else rows[#rows + 1] = { k, tv, path = { k } } end
+    end
+    PR.rows = rows
+end
+local function prGet(path) local v = _G; for _, p in ipairs(path) do v = v[p] end; return v end
+function PR.call(path)
+    local ok, r = pcall(function()
+        local f = prGet(path)
+        local res = table.pack(f())
+        local out = {}
+        for i = 1, res.n do out[#out + 1] = tostring(res[i]) end
+        return #out > 0 and table.concat(out, ", ") or "(no return value)"
+    end)
+    PR.out = (ok and "Returned: " or "Error: ") .. tostring(r)
+end
+NT.viewProbe = function()
+    if PR.rows == nil then pcall(prScan) end
+    local f = PR.filter:lower()
+    local list = {}
+    for _, r in ipairs(PR.rows or {}) do
+        if f == "" or r[1]:lower():find(f, 1, true) then list[#list + 1] = r end
+    end
+    return { cols = { { title = "Name", flex = 3, min = 120 }, { title = "Type", w = 90 } },
+        data = { count = #list, get = function(i) local r = list[i]; return { H.val(r[1]), H.lbl(r[2]) } end },
+        onRow = function(i) PR.sel = list[i]; PR.out = "" end,
+        detail = function()
+            local s = PR.sel
+            if not s then return { lines = { H.lbl(#list .. " members. Pick a row; functions can be called with no arguments (Call, then Confirm).") } } end
+            return { lines = { H.val(s[1]) .. H.lbl("  (" .. s[2] .. ")"), H.lbl(PR.pending and "Press Confirm to call it with no arguments." or (PR.out ~= "" and PR.out or "")) } }
+        end }
+end
+
+end
+
 local VIEWS = { viewUI, viewPlug, viewEvents, viewBrowse, viewAudio, viewSettings, viewPerf, viewGrid, viewFit, viewReload, viewFaq,
-    viewDiag, viewErrors, viewApi, viewCmd, NT.viewSub, NT.viewRes }
+    viewDiag, viewErrors, viewApi, viewCmd, NT.viewSub, NT.viewRes, NT.viewWorld, NT.viewProbe }
 local JUMPS = {}   -- 0.2.6: every tab gets the full pager
 
 -------------------------------------------------------------------------------
@@ -2403,6 +2554,39 @@ local function buildPanel(w)
     do local L = {}; for i, m in ipairs(NT.MON_SETS) do L[i] = "Graphs: " .. m.name end
     setB = ddCtrl(NT.T_RES, 136, L, function() return NT.mon.set end, function(i) NT.mon.set = i; NT.mon.drawn = nil end, nil, "__resset") end
     helpers.setTip(setB.box, "Which two values to graph: Frames (FPS, worst frame), Ticks (logic rate, server tick), Memory (Lua heap, layer components), Cost (refresh, Draw handler).")
+    local WR, PR = NT.WR, NT.PR
+    -- 18 World Render: On/Off dropdowns, marker colour and ring radius
+    do
+        local function tog(label, key, w, tip)
+            return ddCtrl(NT.T_WORLD, w, { label .. ": Off", label .. ": On" }, function() return WR[key] and 2 or 1 end,
+                function(i) WR[key] = i == 2 end, nil, "world " .. key, tip)
+        end
+        if _RDT_UNL then
+            tog("Hide NPCs", "hideNpcs", 130, "Hide every NPC on your screen only. They still exist in the game.")
+            tog("Hide players", "hidePlayers", 140, "Hide other players on your screen only. You stay visible.")
+        end
+        tog("Ring", "aura", 96, "Position ring: a circle around you at the chosen radius (debug marker).")
+        tog("Trail", "trail", 96, "Path trail: a line along where you walked (debug marker).")
+        tog("Beam", "beam", 96, "Sky beam: a vertical line above you (debug marker).")
+        local cl, rl = {}, {}
+        for i, c in ipairs(WR.COLS) do cl[i] = "Colour: " .. c[1] end
+        for i, r in ipairs(WR.RADS) do rl[i] = "Radius: " .. r end
+        ddCtrl(NT.T_WORLD, 120, cl, function() return WR.col end, function(i) WR.col = i end, nil, "world colour", "Colour of the ring, trail and beam.")
+        ddCtrl(NT.T_WORLD, 120, rl, function() return WR.rad end, function(i) WR.rad = i end, nil, "world radius", "Ring radius in world units (512 = 1 tile).")
+        btn(NT.T_WORLD, "All off", 64, function() WR.off(); refresh() end, nil, "__worldoff")
+        helpers.setTip(ctrls[NT.T_WORLD][#ctrls[NT.T_WORLD]].c, "Turn every World Render option off.")
+    end
+    -- 19 Probe (Unlimited)
+    if _RDT_UNL then
+        PR.field = field(NT.T_PROBE, 170, "Filter names", "probe filter")
+        btn(NT.T_PROBE, "Rescan", 60, function() PR.rows = nil; refresh() end, nil, "__probescan")
+        btn(NT.T_PROBE, "Call ()", 60, function()
+            if PR.sel and PR.sel[2] == "function" then PR.pending = PR.sel.path end; refresh()
+        end, function() return PR.sel ~= nil and PR.sel[2] == "function" end, "__probecall")
+        btn(NT.T_PROBE, "Confirm", 64, function() if PR.pending then PR.call(PR.pending); PR.pending = nil end; refresh() end,
+            function() return PR.pending ~= nil end, "__probeconfirm")
+        btn(NT.T_PROBE, "Cancel", 56, function() PR.pending = nil; refresh() end, function() return PR.pending ~= nil end, "__probecancel")
+    end
     NT.mon.field = field(NT.T_RES, 50, "60", "res window")
     helpers.setTip(NT.mon.field, "Graph window in seconds. Type a number from 10 to 120; it applies within a second.")
     btn(NT.T_RES, "Reset", 52, function() NT.mon.hist = {}; NT.mon.drawn = nil; refresh() end, nil, "__resreset")
@@ -2545,6 +2729,7 @@ helpers.installRibbon(PLUGIN_NAME)
 helpers.log("[" .. PLUGIN_NAME .. "] loaded")
 
 function PluginShutdown()
+    pcall(NT.WR.shutdown)
     FaqDialog.close()
     sndStopAll()
     save()

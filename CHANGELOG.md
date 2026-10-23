@@ -1,3 +1,6 @@
+## RS Dev Tools 0.2.14 (2026-10-23)
+- World Render tab (Inspect): client-side position and path debug markers, ported from Rotten Potato. Ring around your position (radius 200 to 3200 units plus a half-tile ring), path trail (last 60 points while moving) and sky beam, drawn with ShapeList.DrawLine. Colour and radius dropdowns and an All off button. Everything is off on load, is not saved, and is turned off when the plugin unloads. Nothing is sent to the game. Adds edition.lua (public build: unlimited = false).
+
 ## RS Dev Tools 0.2.13 (2026-10-23)
 - Option pickers are RuneScape-style dropdowns (shared helpers.dropdown in ui_helpers.lua): a stone box with a gold edge shows the current value and a down arrow; click it to open the list, click an option to pick it, click the box again or anywhere outside to close. Long lists scroll with up/down buttons. Saved choices are unchanged. Dropdowns replace the click-to-cycle view switchers on every tab, Letter, Bus, Grid step, Box width, Submission Check target and Resource Monitor graph set, plus the Edit settings rows.
 
