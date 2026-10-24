@@ -1,3 +1,7 @@
+## RS Dev Tools 0.5.2 (2026-10-23)
+- Model Sandbox uses the shared model_core.lua (same file as Rotten Potato): one copy of SetModel, box creation (hidden, click-through, disabled), the 24..900px clamp, camera and Seq helpers.
+- Shutdown: ui_helpers now also closes an open dropdown and the toast, and unsubscribes every helpers.subscribe event when the plugin unloads.
+
 ## RS Dev Tools 0.5.1 (2026-10-23)
 - X in the title bar now backs out of a sub-view first (Edit/settings, Commands More info and value list, Plugin Analyser window detail); X on the main view still closes the panel.
 - Static tables (hooks, limits, volume and game options, API namespaces, API tries, known gaps) moved to rdt_data.lua: main.lua top-level locals 111 -> 105 (Lua limit 200).

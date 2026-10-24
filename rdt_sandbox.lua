@@ -13,7 +13,7 @@
   * nothing is restored at load. A scene is only saved/loaded by its buttons.]]
 return function(ctx)
     local H, helpers = ctx.H, ctx.helpers
-    local MAX, MAXSZ, HUMAN_H = 20, 900, 1000
+    local MAX = 20
     local SCENE_KEY = "rdt_sandbox_scene"
     local S = { objs = {}, sel = nil, mode = 1, q = "", res = {}, rsel = nil, kind = 1, drag = nil, err = nil, note = "", seq = nil, raiseT = 0 }
     local MODES = { "Show: Spawned", "Show: NPC search", "Show: Item search" }
@@ -22,60 +22,14 @@ return function(ctx)
     local scan = { npc = { next = nil, max = 40000, items = {} }, item = { next = nil, max = 65000, items = {} } }
     local function derr(w, e) S.err = w .. ": " .. tostring(e) end
     local function guard(name, f) return function(...) local ok, e = pcall(f, ...); if not ok then derr(name, e); pcall(ctx.logError, "sandbox " .. name, tostring(e)) end; pcall(ctx.refresh) end end
-    local function top() return helpers.ensureHoverLayer() end
-    local function sc() local s = 1; pcall(function() s = helpers.uiScale() or 1 end); if type(s) ~= "number" or s <= 0 then s = 1 end; return s end
-    local function screenWH() local w, h = 1280, 720; pcall(function() local t = top(); if t.width > 0 then w, h = t.width, t.height end end); return w, h end
-    local function camYaw() local y = 0; pcall(function() local c, f = Camera.GetPosition(), Camera.GetFocusPosition(); y = math.deg(math.atan(f.x - c.x, f.z - c.z)) end); return y end
-    local function camPitch() local p = 0; pcall(function() local c, f = Camera.GetPosition(), Camera.GetFocusPosition(); p = math.atan(c.y - f.y, math.sqrt((f.x - c.x) ^ 2 + (f.z - c.z) ^ 2)) end); return p end
-    local function mouse() local m = nil; pcall(function() if Mouse.IsAvailable() then m = Mouse.GetPosition() end end); return m end
-    -- animations: id.Seq names, built once on first need
-    local function seqList()
-        if S.seq then return S.seq end
-        S.seq = {}
-        pcall(function() for k, v in pairs(id.Seq) do if type(k) == "string" and type(v) == "number" then S.seq[#S.seq + 1] = { id = v, name = k, lower = k:lower() } end end end)
-        table.sort(S.seq, function(a, b) return a.id < b.id end)
-        return S.seq
-    end
-    local function npcInfo(nid)
-        local name, h, tok = "NPC " .. nid, 0, nil
-        pcall(function() local c = config.NPC.FromID(nid); name = tostring(c.name or name)
-            tok = string.lower(tostring(c.configName or "")):match("^([a-z]+)")
-            if tok == nil or #tok < 3 then tok = string.lower(tostring(c.name or "")):match("^([a-z]+)") end end)
-        pcall(function() h = tonumber(config.NPC.FromID(nid).bas.overlayHeight) or 0 end)
-        return name, h, tok
-    end
-    local function animsFor(o)
-        if o.anims then return o.anims end
-        local out = {}
-        if o.tok and #o.tok >= 3 then
-            for _, it in ipairs(seqList()) do
-                if it.lower:find(o.tok, 1, true) == 1 or it.lower:find("_" .. o.tok, 1, true) then out[#out + 1] = it; if #out >= 40 then break end end
-            end
-        end
-        o.anims = out
-        return out
-    end
-    local function idleOf(o)
-        local best = nil
-        for _, it in ipairs(animsFor(o)) do
-            local l = it.lower
-            if (l:find("ready", 1, true) or l:find("stand", 1, true) or l:find("idle", 1, true)) and (best == nil or #l < #best.lower) then best = it end
-        end
-        return best and best.id or -1
-    end
-    local function animName(a) if a == nil or a < 0 then return "none" end; for _, it in ipairs(seqList()) do if it.id == a then return it.name end end; return tostring(a) end
+    local MC = require("model_core")   -- shared with Rotten Potato (0.5.1)
+    local top, sc, screenWH, camYaw, camPitch, mouse = MC.top, MC.sc, MC.screenWH, MC.camYaw, MC.camPitch, MC.mouse
+    local seqList, npcInfo, animName = MC.seqList, MC.npcInfo, MC.animName
+    local function animsFor(o) return MC.animsFor(o, 40) end
+    local function idleOf(o) return MC.idleOf(o, 40) end
     -- model objects
     local function setAnim(o) pcall(function() o.mdl.animID = o.play and o.anim or -1 end) end
-    local function assign(o)
-        local ok, e = pcall(function()
-            if o.kind == "npc" then o.mdl:SetModel(ui.ModelType.NPC_MODEL, o.id)
-            elseif o.kind == "item" then if not pcall(function() o.mdl:SetModel(ui.ModelType.OBJECT, o.id) end) then o.mdl:SetAssociatedObject(o.id) end
-            else o.mdl:SetModel(ui.ModelType.MODEL, o.id) end
-        end)
-        if not ok then derr("SetModel", e) end
-        pcall(function() o.mdl.orthographic = false end)
-        setAnim(o)
-    end
+    local function assign(o) MC.assign(o, function(e) derr("SetModel", e) end); setAnim(o) end
     local function destroy(o)
         pcall(function() o.mdl.hidden = true end); pcall(function() o.handle.hidden = true end)
         pcall(function() o.mdl:Destroy() end); pcall(function() o.handle:Destroy() end)
@@ -89,11 +43,8 @@ return function(ctx)
         if kind == "npc" then local n, h, tok = npcInfo(nid); o.name = name or n; o.h = h; o.tok = tok
         elseif kind == "item" then pcall(function() o.name = name or tostring(config.Obj.FromID(nid).name) end) end
         o.name = o.name or (kind .. " " .. nid)
-        local ok, e = pcall(function()
-            o.mdl = ui.Model.new(t); o.mdl:SetSize(120, 120); o.mdl.hidden = true
-            pcall(function() o.mdl.clickthrough = true end); pcall(function() o.mdl.enabled = false end)
-        end)
-        if not ok then derr("ui.Model.new", e); S.note = "ui.Model could not be created."; return nil end
+        local e; o.mdl, e = MC.newBox(t)
+        if o.mdl == nil then derr("ui.Model.new", e); S.note = "ui.Model could not be created."; return nil end
         pcall(function()
             o.handle = helpers.button(t, 0, 0, 14, 14, "+", function() end)
             o.handle.hidden = true
@@ -118,7 +69,7 @@ return function(ctx)
     end
     ctx.sandbox = { spawn = function(kind, nid, name) local o = nil; pcall(function() o = make(kind, nid, name) end); pcall(ctx.refresh); return o ~= nil end }
     local function hideAll() for _, o in ipairs(S.objs) do pcall(function() o.mdl.hidden = true; o.handle.hidden = true end) end end
-    local function overlaps(r, x, y, w, h) return r ~= nil and x < r.x + r.w and x + w > r.x and y < r.y + r.h and y + h > r.y end
+    local overlaps = MC.overlaps
     local function place(o, pr)
         local s = sc()
         local fx, fy, sz
@@ -127,7 +78,7 @@ return function(ctx)
             local feet, head
             pcall(function()
                 feet = ScreenConvert.Vector3ToScreen(o.pos)
-                local hh = (o.h and o.h > 100) and o.h or HUMAN_H
+                local hh = (o.h and o.h > 100) and o.h or MC.HUMAN_H
                 head = ScreenConvert.Vector3ToScreen(Vector3.new(o.pos.x, o.pos.y + hh * o.scale / 100, o.pos.z))
             end)
             if feet == nil or head == nil or feet.x ~= feet.x then pcall(function() o.mdl.hidden = true; o.handle.hidden = true end); o.off = true; return end
@@ -135,7 +86,7 @@ return function(ctx)
             fx, fy = feet.x / s, feet.y / s
             sz = math.floor(math.abs(feet.y - head.y) / s * 1.6)
         end
-        if sz ~= sz or sz < 24 then sz = 24 elseif sz > MAXSZ then sz = MAXSZ end
+        sz = MC.clamp(sz)   -- 24..900 px
         local w, h = screenWH()
         if fx < -sz or fy < -sz or fx > w + sz or fy > h + sz then pcall(function() o.mdl.hidden = true; o.handle.hidden = true end); o.off = true; return end
         local bx, by = math.floor(fx - sz / 2), math.floor(fy - sz * 0.8)
