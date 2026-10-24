@@ -1,3 +1,6 @@
+## RS Dev Tools 0.5.13 (2026-10-24)
+- New Vars tab (Inspect, rdt_vars.lua): read any VarPlayer, VarBit or VarClient by ID and pin it; watch ID ranges or every named var in chunks of 200 reads per tick (nothing runs until Start watch); change log with tick, type, ID, old, new and delta; Snapshot A/B diff; Step isolation (Mark before and after each add/remove, optional labels, candidates must change on every step and revert on undo); noisy-var filter (auto or Learn noise); expected-amount match (also shifted, for packed values); inventory slot diffs from Inventory events; Copy box for every list. Read only: no var writes, no commands.
+
 ## RS Dev Tools 0.5.3 (2026-10-23)
 - Tooltips no longer flicker or flip between two layouts: one owner per check (innermost control wins over its row), a short show delay, re-layout only when the text changes, offset from the pointer and clamped on screen, and the tooltip never takes hover.
 - Dropdowns open on one click and stay open until you pick an item or click outside: the opening click is ignored by the list, the box toggles once per click, the panel is raised before the list is built and the list is re-raised after any window raise, and small layout jitter no longer closes it.

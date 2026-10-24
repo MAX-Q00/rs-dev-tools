@@ -3,6 +3,7 @@
 -- Each module is required by its literal name (no computed module names).
 local PUBLIC = {
     { "rdt_events", function() return require("rdt_events") end },
+    { "rdt_vars", function() return require("rdt_vars") end },
     { "rdt_world", function() return require("rdt_world") end },
     { "rdt_tree", function() return require("rdt_tree") end },
     { "rdt_shapes", function() return require("rdt_shapes") end },

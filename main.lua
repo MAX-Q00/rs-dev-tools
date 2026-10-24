@@ -32,7 +32,7 @@
 local PLUGIN_NAME = "RS Dev Tools"
 local SLUG = "rs-dev-tools"
 local helpers = require("ui_helpers")
-helpers.VERSION = "0.5.12"
+helpers.VERSION = "0.5.13"
 local H = helpers
 local Table = require("dt_table")
 local FaqDialog = require("faq_dialog")
@@ -2367,6 +2367,7 @@ local okMods, errMods = pcall(function()
         else logError("module " .. name, tostring(spec)); failed[#failed + 1] = name .. " (start: " .. tostring(spec) .. ")" end
     end
     one("rdt_events", function() return require("rdt_events") end)
+    one("rdt_vars", function() return require("rdt_vars") end)
     one("rdt_world", function() return require("rdt_world") end)
     one("rdt_tree", function() return require("rdt_tree") end)
     one("rdt_shapes", function() return require("rdt_shapes") end)
