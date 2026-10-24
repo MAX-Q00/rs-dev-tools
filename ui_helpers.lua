@@ -425,7 +425,8 @@ local function uiScale()
     return 1
 end
 
-helpers.uiScale = function() return uiScale() end   -- 0.5.0 (Model Sandbox)
+helpers.uiScale = function() return uiScale() end
+
 local function tickDrag()
     if drag == nil then return end   -- early return: no work when idle
     if helpers.common.lock then drag = nil; return end
@@ -794,7 +795,8 @@ function helpers.editToggle(box, isOpen, onToggle)
     end, true)
     -- Bottom-right "Done" in the settings section closes Edit the same way.
     win.closeEdit = function()
-        if isOpen() then onToggle(false); helpers.setText(b, "Edit", "label") end
+        if isOpen() then onToggle(false); helpers.setText(b, "Edit", "label"); return true end
+        return false
     end
     helpers.safe(function() b:SetPos(helpers.titleBtnX() + 44, 3) end)
     win.hasEdit = true
@@ -836,7 +838,7 @@ function helpers.titleRight()
     return helpers.PAD + 44 + (win.hasEdit and ((win.editW or 34) + 4) or 0) + 4
 end
 -- Short titles used only when the full title does not fit.
-helpers.SHORT_TITLES = { ["Gear Preset Checker"] = "Presets", ["World Event Timers"] = "Timers", ["Slayer Task Tracker"] = "Tasks", ["Cursor Sprite"] = "Cursor", ["RS Dev Tools"] = "Dev", ["Sound Browser"] = "Sounds" }
+helpers.SHORT_TITLES = { ["Gear Preset Checker"] = "Presets", ["World Event Timers"] = "Timers", ["Slayer Task Tracker"] = "Tasks", ["Cursor Sprite"] = "Cursor", ["RS Dev Tools"] = "Dev", ["Sound Browser"] = "Sounds", ["Rotten Potato"] = "RP" }
 
 --[[
   Ellipsis fitting (0.10.2). helpers.fitText shortens a string (colour tags
@@ -1036,11 +1038,6 @@ function helpers.raiseWindow()
     end)
     if helpers.afterRaise then pcall(helpers.afterRaise) end
 end
--- 0.5.0: unconditional raise (Model Sandbox keeps the panel above model boxes)
-function helpers.raiseFront()
-    pcall(function() if win.state ~= nil and win.state.collapsed and win.icon ~= nil then win.icon:MoveToFront() elseif win.box ~= nil then win.box:MoveToFront() end end)
-    if helpers.afterRaise then pcall(helpers.afterRaise) end
-end
 function helpers.raiseOnClick(c)
     if c == nil then return end
     pcall(function() c:Subscribe(ui.Hook.ONCLICK, "wndRaise", function() helpers.raiseWindow() end) end)
@@ -1108,7 +1105,8 @@ function helpers.tickHover()
             if ok and type(v) == "string" and v ~= "" then tipC, tipText = c, v; break end
         end
     end
-    -- 0.4.1 (RS Dev Tools): world item hover text (rdt_hover) when no panel tip applies
+    -- Optional extension: helpers.worldHover() returns hover text for the game
+    -- world (RS Dev Tools item hover) when no panel tip applies. Nil = off.
     if found == nil and tipC == nil and helpers.worldHover ~= nil then
         local okW, w = pcall(helpers.worldHover)
         if okW and type(w) == "string" and w ~= "" then tipC, tipText = true, w end
@@ -1370,6 +1368,12 @@ function helpers.commonItems(onChange)
           get = function() return 1 end,
           set = function() helpers.resetWindow() end },
         bool("titleIcon", "Title bar icon", "Shown", "Hidden"),
+        { label = "Column resize", options = { "Drag", "Buttons" },
+          get = function() return c.colButtons and 2 or 1 end,
+          set = function(i) c.colButtons = i == 2; helpers.saveCommon(); helpers.refreshColumns(); if onChange then onChange() end end },
+        { label = "Column widths", options = { "Reset" },
+          get = function() return 1 end,
+          set = function() helpers.resetColumns(); if onChange then onChange() end end },
         { label = "Version " .. tostring(helpers.VERSION) },
     }
 end
@@ -1447,6 +1451,20 @@ function helpers.setCollapsed(v)
     win.state.closed = v
     saveWinState()
     applyCollapsed()
+end
+-- Shared extensions (2026-10-23 canonical sync): window handles and an
+-- unconditional raise (model boxes in RP / RDT keep the panel on top).
+-- Close the Edit / settings section if it is open (for helpers.onCloseSub).
+function helpers.closeEditIfOpen()
+    if win.closeEdit == nil then return false end
+    local ok, r = pcall(win.closeEdit)
+    return ok and r == true
+end
+function helpers.winBox() return win.box end
+function helpers.winIcon() return win.icon end
+function helpers.raiseFront()
+    pcall(function() if win.state ~= nil and win.state.collapsed and win.icon ~= nil then win.icon:MoveToFront() elseif win.box ~= nil then win.box:MoveToFront() end end)
+    if helpers.afterRaise then pcall(helpers.afterRaise) end
 end
 function helpers.isCollapsed() return win.state ~= nil and win.state.collapsed == true end
 

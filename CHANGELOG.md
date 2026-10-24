@@ -1,3 +1,8 @@
+## RS Dev Tools 0.5.1 (2026-10-23)
+- X in the title bar now backs out of a sub-view first (Edit/settings, Commands More info and value list, Plugin Analyser window detail); X on the main view still closes the panel.
+- Static tables (hooks, limits, volume and game options, API namespaces, API tries, known gaps) moved to rdt_data.lua: main.lua top-level locals 111 -> 105 (Lua limit 200).
+- ui_helpers synced with the shared canonical copy: Settings gets the Column resize (Drag/Buttons) and Column widths: Reset rows; Rotten Potato short title is RP.
+
 ## RS Dev Tools 0.5.0 (2026-10-23)
 - New Assets > Model Sandbox tab: spawn client-side 3D models of NPCs, items or raw model IDs in the game view (up to 20 at once), using documented ui.Model/SetModel, ScreenConvert.Vector3ToScreen, Camera pitch and NPCType.bas.overlayHeight.
 - Search NPCs or items (Show dropdown), or type an ID, then Spawn on screen. The Item browser also has Spawn on screen for the picked item.

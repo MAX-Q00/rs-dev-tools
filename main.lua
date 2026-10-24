@@ -32,10 +32,11 @@
 local PLUGIN_NAME = "RS Dev Tools"
 local SLUG = "rs-dev-tools"
 local helpers = require("ui_helpers")
-helpers.VERSION = "0.5.0"
+helpers.VERSION = "0.5.1"
 local H = helpers
 local Table = require("dt_table")
 local FaqDialog = require("faq_dialog")
+local D = require("rdt_data")   -- 0.5.1: static tables (200-local headroom)
 -- 0.4.0: single edition. The former Unlimited-only features are always on;
 -- _RDT_UNL stays as a constant so the old branches keep working.
 _RDT_UNL = true
@@ -431,10 +432,9 @@ local function plugScan()
 end
 -- Opt-in hooks: a plugin listed in optionalDependencies is exposed as a global
 -- named after it ('-' becomes '_'). Only these names are looked at.
-local HOOK_NAMES = { "world_event_timers", "gear_preset_checker", "slayer_task_tracker", "sound_browser", "cursor_sprite" }
 local function hookRows()
     local rows = {}
-    for _, g in ipairs(HOOK_NAMES) do
+    for _, g in ipairs(D.HOOK_NAMES) do
         local mod = rawget(_G, g)
         if type(mod) ~= "table" or type(mod.devInfo) ~= "function" then
             rows[#rows + 1] = { H.val(nice(g)), H.lbl("-"), H.lbl("not linked") }
@@ -456,21 +456,10 @@ local function hookRows()
     end
     return rows
 end
-local LIMITS = {
-    { "Panels of other plugins", "yes, read only", "scan of the shared plugin layer: type, position, size, shown, text" },
-    { "Which plugin owns a panel", "no", "the layer has no owner field; the title text is shown as a guess" },
-    { "Other plugins' settings", "no", "PersistentDB is isolated per plugin" },
-    { "Other plugins' files", "no", "no file API; require only loads this plugin's own files" },
-    { "Other plugins' timings", "no", "no profiler API; only this plugin's own cost is timed" },
-    { "List installed plugins", "no", "no API; the console command plist is for people" },
-    { "Run console commands", "yes, in dev", "ExecuteConsoleCommand (API core; FAQ 3). The Commands tab runs one only when you click Run" },
-    { "Layer ID usage", "yes", "component count on the plugin layer vs the 4096 dynamic ID limit (Diagnostics)" },
-    { "Plugin's own report", "opt in", "a plugin returns devInfo from main.lua and is listed in optionalDependencies" },
-}
 local function viewPlug()
     if plug.mode == "limits" then
         local rows = {}
-        for _, l in ipairs(LIMITS) do rows[#rows + 1] = { H.val(l[1]), (l[2] == "no" or l[2] == "not used") and H.col(H.C_WARN, l[2]) or H.col(H.C_GOOD, l[2]), H.lbl(l[3]) } end
+        for _, l in ipairs(D.LIMITS) do rows[#rows + 1] = { H.val(l[1]), (l[2] == "no" or l[2] == "not used") and H.col(H.C_WARN, l[2]) or H.col(H.C_GOOD, l[2]), H.lbl(l[3]) } end
         return { cols = { { title = "What", flex = 2, min = 90 }, { title = "Possible", w = 70 }, { title = "How or why", flex = 3, min = 90 } }, data = arr(rows) }
     elseif plug.mode == "hooks" then
         return { cols = { { title = "Plugin", w = 130 }, { title = "Key", w = 100 }, { title = "Value", flex = 1, min = 80 } }, data = arr(hookRows()) }
@@ -804,7 +793,6 @@ local function sndStopAll()
     snd.insts = {}
     snd.played = {}
 end
-local VOL_OPTS = { "VolumeMaster", "VolumeMainEffects", "VolumeBackgroundEffects", "VolumeMainMusic", "VolumeSpeech", "VolumeLoginMusic" }
 local viewBusTest
 local function viewAudio()
     initSounds()
@@ -815,7 +803,7 @@ local function viewAudio()
         H.lbl("  playing ") .. H.val(playing)
     if snd.mode == "volumes" then
         local rows = {}
-        for _, o in ipairs(VOL_OPTS) do
+        for _, o in ipairs(D.VOL_OPTS) do
             local v, mx = nil, nil
             pcall(function() local op = game.options[o]; v, mx = op.setting, op.max end)
             rows[#rows + 1] = { H.val(nice(o)), H.lbl(tostring(v or "-")), H.lbl(tostring(mx or "-")) }
@@ -851,14 +839,6 @@ end
 -------------------------------------------------------------------------------
 -- 6. Settings (this plugin's PersistentDB entries and client options)
 -------------------------------------------------------------------------------
-local OPTIONS = { "AmbientOcclusion", "AnimationQuality", "AnisotropicFiltering", "AntialiasingMode",
-    "AntialiasingQuality", "Bloom", "CanopyCutout", "CustomPlayerModelCount", "DOF", "DrawDistance",
-    "EntityHighlights", "GameRenderScale", "GroundBlending", "GroundDecor", "LightingQuality",
-    "ParticleQuality", "Reflections", "ShadowQuality", "Shadows", "SmoothClipFade", "Texturing",
-    "MaxBackgroundFps", "MaxForegroundFps", "VolumetricLighting", "VSync", "VolumeBackgroundEffects",
-    "VolumeLoginMusic", "VolumeMainEffects", "VolumeMainMusic", "VolumeMaster", "VolumeSpeech",
-    "RemoveRoof", "CursorScale", "CutsceneSubtitles", "Language", "InterfaceScale", "Brightness",
-    "ConsoleKey", "CustomCursors", "DeviceCapOverrides", "Diagnostics", "RichPresence", "HapticFeedback" }
 local setField
 local setMode = "plugin"
 local function short(v, depth)
@@ -891,7 +871,7 @@ local function viewSettings()
             end }
     end
     local rows = {}
-    for _, o in ipairs(OPTIONS) do
+    for _, o in ipairs(D.OPTIONS) do
         if want(o) then
             local v, lbl, mn, mx = nil, nil, nil, nil
             pcall(function()
@@ -1362,47 +1342,12 @@ end
 -- 14. API Explorer: what the API exposes in this client, with live
 --     read-only test calls. Missing namespaces are flagged, not hidden.
 -------------------------------------------------------------------------------
-local API_NS = { "Event", "Plugin", "PluginPermissions", "PersistentDB", "Mouse", "Keyboard", "audio", "ui", "config", "id",
-    "game", "http", "Vector2", "Vector3", "Vector4" }
-local TRIES = {
-    { "Mouse.IsAvailable()", function() return Mouse.IsAvailable() end },
-    { "Mouse.GetPosition()", function() local p = Mouse.GetPosition(); return p.x .. ", " .. p.y end },
-    { "Plugin.HasPermission(httpAccess)", function() return Plugin.HasPermission(PluginPermissions.httpAccess) end },
-    { "game.options.InterfaceScale.setting", function() return game.options.InterfaceScale.setting end },
-    { "game.options.VolumeMaster.setting", function() return game.options.VolumeMaster.setting end },
-    { "id.Sprite.FromID(1)", function() return id.Sprite.FromID(1) end },
-    { "id.Sound.FromID(1)", function() return id.Sound.FromID(1) end },
-    { "config.Obj.FromID(1).name", function() return config.Obj.FromID(1).name end },
-    { "config.Cursor.FromID(0).spriteID", function() return config.Cursor.FromID(0).spriteID end },
-    { "config.Font.FromID(font):GetStringWidth", function() return config.Font.FromID(H.FONT):GetStringWidth("Test") end },
-    { "ui.Interfaces:GetComponent(plugin layer)", function() return tostring(ui.Interfaces:GetComponent(id.Component.TOPLEVEL_V2__PLUGIN_BUILD_LAYER_TOP) ~= nil) end },
-    { "PersistentDB:IterateEntries (count)", function() local n = 0; PersistentDB:IterateEntries(function() n = n + 1; return false end); return n end },
-    { "os.clock()", function() return os.clock() end },
-}
 local api = { mode = "members", rows = nil, tries = {} }
 -- Known gaps and bugs reported in the plugin developer Discord (FAQ numbers).
 -- "Live" runs a presence check where one is possible; otherwise "reported".
-local GAPS = {
-    { "No os library (use Logic ticks to time)", 22, function() return type(rawget(_G, "os")) == "table" and "os present here" or "confirmed: os missing" end },
-    { "ExecuteConsoleCommand exists (used by the Commands tab)", 3, function() return type(rawget(_G, "ExecuteConsoleCommand")) == "function" and "present" or "not present" end },
-    { "requiredPermissions does not work; use optional", 1, nil },
-    { "LocList.All() returns scenery only", 24, function() return type(rawget(_G, "LocList")) == "table" and "LocList present (not called)" or "LocList not global" end },
-    { "Chat event fields are read only", 20, nil },
-    { "No component text update events, no wait", 19, nil },
-    { "Headerless group box: SetHeaderLayout(0,0,0,0,0) still shows a header", 14, nil },
-    { "Two NPCEntityAdded listeners: second gets isValid false", 21, nil },
-    { "Docs say valid, property is isValid", 23, nil },
-    { "Sound volume below 1 reported as not playing", 28, nil },
-    { "Drag coordinates scale on high DPI", 15, nil },
-    { "No auto-focus for text inputs", 16, nil },
-    { "Animations, gizmo perks, drop tables not exposed", 24, nil },
-    { "Friends and FC lists only while their window is open", 24, nil },
-    { "Library-made components not destroyed on reload", 13, nil },
-    { "Dev plugins do not re-enable on login", 11, nil },
-}
 local function apiMembers()
     local rows = {}
-    for _, ns in ipairs(API_NS) do
+    for _, ns in ipairs(D.API_NS) do
         local t = rawget(_G, ns)
         if t == nil then
             rows[#rows + 1] = { H.val(ns), H.lbl("-"), H.col(H.C_WARN, "missing") }
@@ -1422,7 +1367,7 @@ end
 local function viewApi()
     if api.mode == "gaps" then
         local rows = {}
-        for _, g in ipairs(GAPS) do
+        for _, g in ipairs(D.GAPS) do
             local live = "reported"
             if g[3] then local ok, v = pcall(g[3]); live = ok and tostring(v) or "check failed" end
             rows[#rows + 1] = { H.val(g[1]), H.lbl(g[2]), H.lbl(live), g = g }
@@ -1450,7 +1395,7 @@ local function viewApi()
         return { cols = { { title = "Event", flex = 1, min = 110 }, { title = "Subscribe", w = 110 }, { title = "Fired", w = 60 } }, data = arr(rows) }
     elseif api.mode == "try" then
         local rows = {}
-        for i, t in ipairs(TRIES) do
+        for i, t in ipairs(D.TRIES) do
             local r = api.tries[i]
             rows[#rows + 1] = { H.val(t[1]), r == nil and H.lbl("click to run") or (r.ok and H.col(H.C_GOOD, "ok") or H.col(H.C_BAD, "error")), H.lbl(r and r.v or "") }
         end
@@ -1458,7 +1403,7 @@ local function viewApi()
             data = arr(rows),
             onRow = function(i)
                 local trace = nil
-                local ok, v = xpcall(TRIES[i][2], function(e) if hasTrace then pcall(function() trace = debug.traceback(tostring(e), 2) end) end; return e end)
+                local ok, v = xpcall(D.TRIES[i][2], function(e) if hasTrace then pcall(function() trace = debug.traceback(tostring(e), 2) end) end; return e end)
                 api.tries[i] = { ok = ok, v = untag(v), trace = trace }
                 sel[14] = i; tbl.selected = i
             end,
@@ -1466,8 +1411,8 @@ local function viewApi()
                 local i = sel[14]
                 if i == nil then return { lines = { H.lbl("Click a call to run it now. All calls are read only.") } } end
                 local r = api.tries[i]
-                return { lines = { H.gold(TRIES[i][1]), r.ok and H.val(r.v) or H.col(H.C_BAD, r.v), r.trace and H.lbl((r.trace:gsub("\n", "  "))) or nil },
-                    copy = TRIES[i][1] .. "  -- " .. r.v }
+                return { lines = { H.gold(D.TRIES[i][1]), r.ok and H.val(r.v) or H.col(H.C_BAD, r.v), r.trace and H.lbl((r.trace:gsub("\n", "  "))) or nil },
+                    copy = D.TRIES[i][1] .. "  -- " .. r.v }
             end }
     end
     api.rows = api.rows or apiMembers()
@@ -2566,6 +2511,20 @@ local function selectTab(i)
     tbl.page = pages[i] or 1
     tbl.selected = nil
     layout(); helpers.refit()
+end
+-- 0.5.1: X in the title bar backs out of a sub-view (Edit/settings, Commands
+-- More info / value list, Plugin Analyser window detail) instead of closing
+-- the whole panel. Same steps as the Back buttons. ui_helpers pcalls this.
+helpers.onCloseSub = function()
+    if helpers.closeEditIfOpen() then return true end
+    if state.tab == T_CMD and cmd ~= nil and cmd.more then
+        if cmd.valArg then cmd.valArg = nil else cmd.more = false end
+        tbl.page = 1; tbl.selected = nil; refresh(); return true
+    end
+    if state.tab == T_PLUG and plug.mode == "layer" and plug.open ~= nil then
+        plug.open = nil; sel[T_PLUG] = nil; tbl.page = 1; refresh(); return true
+    end
+    return false
 end
 
 -------------------------------------------------------------------------------
