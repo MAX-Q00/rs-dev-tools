@@ -35,6 +35,7 @@ RDT_MODS["rdt_sandbox"] = function(ctx)
     local function destroy(o)
         pcall(function() o.mdl.hidden = true end); pcall(function() o.handle.hidden = true end)
         pcall(function() o.mdl:Destroy() end); pcall(function() o.handle:Destroy() end)
+        if helpers.forget then pcall(helpers.forget, { o.handle }) end -- 0.5.12: drop tip/raise refs
     end
     local function selIdx() for i, o in ipairs(S.objs) do if o == S.sel then return i end end; return nil end
     local function make(kind, nid, name, pos, opts)
