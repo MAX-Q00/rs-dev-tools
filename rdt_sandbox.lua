@@ -31,7 +31,7 @@ RDT_MODS["rdt_sandbox"] = function(ctx)
     local function idleOf(o) return MC.idleOf(o, 40) end
     -- model objects
     local function setAnim(o) pcall(function() o.mdl.animID = o.play and o.anim or -1 end) end
-    local function assign(o) MC.assign(o, function(e) derr("SetModel", e) end); setAnim(o) end
+    local function assign(o) o.lastRot = nil; o.lastBox = nil; MC.assign(o, function(e) derr("SetModel", e) end); setAnim(o) end
     local function destroy(o)
         pcall(function() o.mdl.hidden = true end); pcall(function() o.handle.hidden = true end)
         pcall(function() o.mdl:Destroy() end); pcall(function() o.handle:Destroy() end)
@@ -70,7 +70,7 @@ RDT_MODS["rdt_sandbox"] = function(ctx)
         return o
     end
     ctx.sandbox = { spawn = function(kind, nid, name) local o = nil; pcall(function() o = make(kind, nid, name) end); pcall(ctx.refresh); return o ~= nil end }
-    local function hideAll() for _, o in ipairs(S.objs) do pcall(function() o.mdl.hidden = true; o.handle.hidden = true end) end end
+    local function hideAll() for _, o in ipairs(S.objs) do o.wasHidden = true; o.lastHandle = nil; pcall(function() o.mdl.hidden = true; o.handle.hidden = true end) end end
     local overlaps = MC.overlaps
     local function place(o, pr)
         local s = sc()
@@ -83,23 +83,23 @@ RDT_MODS["rdt_sandbox"] = function(ctx)
                 local hh = (o.h and o.h > 100) and o.h or MC.HUMAN_H
                 head = ScreenConvert.Vector3ToScreen(Vector3.new(o.pos.x, o.pos.y + hh * o.scale / 100, o.pos.z))
             end)
-            if feet == nil or head == nil or feet.x ~= feet.x then pcall(function() o.mdl.hidden = true; o.handle.hidden = true end); o.off = true; return end
+            if feet == nil or head == nil or feet.x ~= feet.x then pcall(function() o.mdl.hidden = true; o.handle.hidden = true end); o.off = true; o.wasHidden = true; o.lastHandle = nil; return end
             o.off = false
             fx, fy = feet.x / s, feet.y / s
             sz = math.floor(math.abs(feet.y - head.y) / s * 1.6)
         end
         sz = MC.clamp(sz)   -- 24..900 px
         local w, h = screenWH()
-        if fx < -sz or fy < -sz or fx > w + sz or fy > h + sz then pcall(function() o.mdl.hidden = true; o.handle.hidden = true end); o.off = true; return end
+        if fx < -sz or fy < -sz or fx > w + sz or fy > h + sz then pcall(function() o.mdl.hidden = true; o.handle.hidden = true end); o.off = true; o.wasHidden = true; o.lastHandle = nil; return end
         local bx, by = math.floor(fx - sz / 2), math.floor(fy - sz * 0.8)
-        pcall(function() o.mdl:SetSize(sz, sz); o.mdl:SetPos(bx, by); o.mdl.hidden = false end)
+        -- 0.5.11: only touch the model box when its size/position changed (was every tick: flicker)
         pcall(function()
             local yaw = o.pin and o.yaw or (o.yaw - camYaw())
-            local rotV = Vector3.new(math.rad(yaw), o.pin and 0 or camPitch(), 0); if not pcall(function() o.mdl.rotation = rotV end) then o.mdl:SetTransform(Vector3.new(0, 0, 0), rotV, Vector3.new(1, 1, 1), 0) end
+            local pitch = o.pin and 0 or camPitch()
         end)
         local hx, hy = math.floor(fx - 7), math.floor(fy + 2)
         local hideH = overlaps(pr, hx, hy, 14, 14)
-        pcall(function() o.handle:SetPos(hx, hy); o.handle.hidden = hideH; o.handle.label = (o == S.sel) and "*" or "+" end)
+        local lab = (o == S.sel) and "*" or "+"
         return overlaps(pr, bx, by, sz, sz)
     end
     local function dragStep()
