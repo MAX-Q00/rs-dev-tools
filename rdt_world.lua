@@ -1,7 +1,9 @@
 --[[ rdt_world.lua (0.3.0) Camera & World tab (Inspect): live read-only
   readouts from Camera, Player, World, ScreenConvert, Mouse, Keyboard and the
   entity lists (counts only; no other player's details are shown). ]]
-return function(ctx)
+-- 0.5.10: this client's require returns nil, so the module also registers itself in RDT_MODS.
+RDT_MODS = RDT_MODS or {}
+RDT_MODS["rdt_world"] = function(ctx)
     local H = ctx.H
     local S = { rows = {} }
     local function v3(v) if v == nil then return "-" end; return string.format("%.0f, %.0f, %.0f", v.x or 0, v.y or 0, v.z or 0) end
@@ -80,3 +82,4 @@ return function(ctx)
     end
     return spec
 end
+return RDT_MODS["rdt_world"]

@@ -2,7 +2,9 @@
   own panel with ComponentCollection:IterateStaticComponents and
   IterateDynamicComponents and lists every component with depth, type,
   position, size and visibility. Read only; other plugins are untouched. ]]
-return function(ctx)
+-- 0.5.10: this client's require returns nil, so the module also registers itself in RDT_MODS.
+RDT_MODS = RDT_MODS or {}
+RDT_MODS["rdt_tree"] = function(ctx)
     local H = ctx.H
     local S = { rows = {}, sel = nil, maxDepth = 3 }
     local function kind(c)
@@ -51,3 +53,4 @@ return function(ctx)
     end
     return spec
 end
+return RDT_MODS["rdt_tree"]

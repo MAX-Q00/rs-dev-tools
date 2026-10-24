@@ -4,7 +4,9 @@
   Hides ground items, yourself, or NPCs by name (hide matching / show only
   matching). Subscribed directly, never through helpers.subscribe, so the
   return value is kept. ]]
-return function(ctx)
+-- 0.5.10: this client's require returns nil, so the module also registers itself in RDT_MODS.
+RDT_MODS = RDT_MODS or {}
+RDT_MODS["rdt_visual"] = function(ctx)
     local H = ctx.H
     local S = { items = false, self = false, mode = 1, filt = "", hidden = 0, me = nil }
     local MODES = { "NPC name: off", "Hide matching", "Show only matching" }
@@ -60,3 +62,4 @@ return function(ctx)
     end
     return spec
 end
+return RDT_MODS["rdt_visual"]

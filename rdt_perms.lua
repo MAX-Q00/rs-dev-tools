@@ -8,7 +8,9 @@
   it runs). Plugin.HasPermission reports only this plugin; no API lists
   plugins or reads another plugin's permissions, so the plugin list is this
   suite plus a typed name. ]]
-return function(ctx)
+-- 0.5.10: this client's require returns nil, so the module also registers itself in RDT_MODS.
+RDT_MODS = RDT_MODS or {}
+RDT_MODS["rdt_perms"] = function(ctx)
     local H = ctx.H
     local UNV = " (unverified)"
     local PERMS = {
@@ -183,3 +185,4 @@ return function(ctx)
     function spec.view() return SUBS[S.sub].view() end
     return spec
 end
+return RDT_MODS["rdt_perms"]

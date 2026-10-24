@@ -11,7 +11,9 @@
     overlaps the panel;
   * every per-tick step and every button callback is pcall-guarded;
   * nothing is restored at load. A scene is only saved/loaded by its buttons.]]
-return function(ctx)
+-- 0.5.10: this client's require returns nil, so the module also registers itself in RDT_MODS.
+RDT_MODS = RDT_MODS or {}
+RDT_MODS["rdt_sandbox"] = function(ctx)
     local H, helpers = ctx.H, ctx.helpers
     local MAX = 20
     local SCENE_KEY = "rdt_sandbox_scene"
@@ -238,3 +240,4 @@ return function(ctx)
     end
     return spec
 end
+return RDT_MODS["rdt_sandbox"]

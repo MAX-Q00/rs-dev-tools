@@ -4,7 +4,9 @@
   click. If any step is destructive (the same list the Commands tab uses),
   Start asks for Confirm first. Never sends game input or types in game.
   Saved macros live in this plugin's PersistentDB (key rdtu_macros). ]]
-return function(ctx)
+-- 0.5.10: this client's require returns nil, so the module also registers itself in RDT_MODS.
+RDT_MODS = RDT_MODS or {}
+RDT_MODS["rdt_auto"] = function(ctx)
     local H = ctx.H
     local KEY = "rdtu_macros"
     local PRESETS = {
@@ -112,3 +114,4 @@ return function(ctx)
     end
     return spec
 end
+return RDT_MODS["rdt_auto"]

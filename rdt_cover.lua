@@ -2,7 +2,9 @@
   entry and event, whether this build of RS Dev Tools uses it (generated
   into rdt_api_data.lua by release/gen_api_data.py), and a live check that
   the name exists in this client. Read only. ]]
-return function(ctx)
+-- 0.5.10: this client's require returns nil, so the module also registers itself in RDT_MODS.
+RDT_MODS = RDT_MODS or {}
+RDT_MODS["rdt_cover"] = function(ctx)
     local H = ctx.H
     local D = { rows = {} }
     pcall(function() D = require("rdt_api_data") end)
@@ -45,3 +47,4 @@ return function(ctx)
     end
     return spec
 end
+return RDT_MODS["rdt_cover"]

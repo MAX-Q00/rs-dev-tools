@@ -2,7 +2,9 @@
   ShapeList.Draw / DrawLine, ShapeData registration, AABB maths and a
   ui.Canvas. Shapes are drawn around your own position, client-side only,
   off by default and removed when the plugin unloads. ]]
-return function(ctx)
+-- 0.5.10: this client's require returns nil, so the module also registers itself in RDT_MODS.
+RDT_MODS = RDT_MODS or {}
+RDT_MODS["rdt_shapes"] = function(ctx)
     local H = ctx.H
     local S = { shape = 1, on = false, depth = 1, width = 3, spin = true, t = 0, canvas = nil, canvasOn = false, res = {}, drawOk = nil, reg = nil }
     local SHAPES = { "Tile", "3x3 tiles", "Box", "Cross", "Registered ShapeData", "Line to camera focus" }
@@ -119,3 +121,4 @@ return function(ctx)
     end
     return spec
 end
+return RDT_MODS["rdt_shapes"]

@@ -1,7 +1,9 @@
 --[[ rdt_prof.lua (0.3.0) Profiler tab (Inspect): times documented API calls
   with os.clock (N calls each, on a Run click), plus this panel's own layout
   cost and frame times from the Perf Meter data. Read-only calls only. ]]
-return function(ctx)
+-- 0.5.10: this client's require returns nil, so the module also registers itself in RDT_MODS.
+RDT_MODS = RDT_MODS or {}
+RDT_MODS["rdt_prof"] = function(ctx)
     local H = ctx.H
     local S = { res = {}, n = 200, running = false }
     local function V() return Vector3.new(1, 2, 3) end
@@ -62,3 +64,4 @@ return function(ctx)
     end
     return spec
 end
+return RDT_MODS["rdt_prof"]

@@ -7,7 +7,9 @@
      (debug.getinfo when present) and flags names the docs never mention.
   Read only: no function is ever called. Only plain reads inside pcall.
   Results are saved to PersistentDB key rdt_probe (+ rdt_probe_1..N chunks). ]]
-return function(ctx)
+-- 0.5.10: this client's require returns nil, so the module also registers itself in RDT_MODS.
+RDT_MODS = RDT_MODS or {}
+RDT_MODS["rdt_probe"] = function(ctx)
     local H = ctx.H
     -- documented names: full api paths + every identifier in the docs
     local DOCP, DOCN = {}, {}
@@ -201,3 +203,4 @@ return function(ctx)
     function spec.shutdown() S.job = nil end
     return spec
 end
+return RDT_MODS["rdt_probe"]

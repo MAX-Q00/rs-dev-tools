@@ -7,7 +7,9 @@
   click; Copy puts it in a selectable box (plugins have no clipboard API).
   A numeric ID is never sent to !give: Run is off unless a config name was
   found. The Sprite Browser's "Give" button pre-fills this tab (ctx.give). ]]
-return function(ctx)
+-- 0.5.10: this client's require returns nil, so the module also registers itself in RDT_MODS.
+RDT_MODS = RDT_MODS or {}
+RDT_MODS["rdt_give"] = function(ctx)
     local H = ctx.H
     local S = { id = nil, cfg = nil, disp = nil, count = 1, inv = 1, invs = { "inv", "bank" }, scan = nil, note = nil, lastId = nil }
     local spec = { name = "Give by ID", cat = "Debug" }
@@ -105,3 +107,4 @@ return function(ctx)
     end
     return spec
 end
+return RDT_MODS["rdt_give"]

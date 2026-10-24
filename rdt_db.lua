@@ -2,7 +2,9 @@
   plugin's own saved data (PersistentDB is isolated per plugin, so other
   plugins' data cannot be reached). Set writes a typed value; Delete and
   Clear all need a Confirm click. ]]
-return function(ctx)
+-- 0.5.10: this client's require returns nil, so the module also registers itself in RDT_MODS.
+RDT_MODS = RDT_MODS or {}
+RDT_MODS["rdt_db"] = function(ctx)
     local H = ctx.H
     local S = { rows = {}, sel = nil, pending = nil, note = nil, typ = 1 }
     local TYPES = { "Type: auto", "Type: string", "Type: number", "Type: bool" }
@@ -83,3 +85,4 @@ return function(ctx)
     end
     return spec
 end
+return RDT_MODS["rdt_db"]

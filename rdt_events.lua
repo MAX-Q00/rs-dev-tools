@@ -17,7 +17,9 @@ local FIELDS = { "logicTick", "timeDeltaSecs", "pluginIdentifier", "permissionNa
     "mapSquareMaxZ", "regionGridCorner", "regionGridWidth", "regionGridLength", "playerEntity", "npcEntity", "objStackEntity", "locEntity",
     "entity", "index", "label", "id" }
 local PRIVATE = { chatMessage = true, senderNameUnfiltered = true, senderNameFiltered = true, senderNameSimple = true }
-return function(ctx)
+-- 0.5.10: this client's require returns nil, so the module also registers itself in RDT_MODS.
+RDT_MODS = RDT_MODS or {}
+RDT_MODS["rdt_events"] = function(ctx)
     local H = ctx.H
     local S = { n = {}, last = {}, pay = {}, rate = {}, prev = {}, sel = nil, subs = {}, paused = false, mode = 1 }
     local function brief(v)
@@ -105,3 +107,4 @@ return function(ctx)
     end
     return spec
 end
+return RDT_MODS["rdt_events"]
