@@ -32,7 +32,7 @@
 local PLUGIN_NAME = "RS Dev Tools"
 local SLUG = "rs-dev-tools"
 local helpers = require("ui_helpers")
-helpers.VERSION = "0.5.2"
+helpers.VERSION = "0.5.3"
 local H = helpers
 local Table = require("dt_table")
 local FaqDialog = require("faq_dialog")
@@ -101,6 +101,9 @@ local function guarded(where, fn, ...)
     local trace = nil
     local ok, r = xpcall(fn, function(e)
         if hasTrace then pcall(function() trace = debug.traceback(tostring(e), 2) end) end
+        -- sandbox has no debug library: keep the plain message, which already
+        -- carries "source:line:" for runtime errors
+        if trace == nil then trace = "at " .. (tostring(e):match("^([^:]+:%d+):") or "unknown source") end
         return e
     end, ...)
     if not ok then logError(where, r, trace) end
@@ -110,6 +113,8 @@ helpers.subscribe = function(pluginName, eventName, refName, fn)
     local ok, err = pcall(function()
         Event[eventName].Subscribe(refName, function(...) guarded(eventName, fn, ...) end)
     end)
+    -- 0.5.3: record it so helpers.unsubscribeAll() frees it at shutdown
+    if ok and helpers.subs then helpers.subs[#helpers.subs + 1] = { eventName, refName } end
     subs[eventName] = ok
     if not ok then logError("subscribe " .. eventName, err) end
 end
@@ -1203,6 +1208,14 @@ local function leakCheck()
     if leak.base == nil then leak.base = { d = d, t = t } end
     if t > leak.peak then leak.peak = t end
 end
+-- 0.5.3: PluginShutdown is a global of THIS plugin's environment; plugins do
+-- not run with _G as their environment, so rawget(_G, ...) never saw it.
+NT.hasShutdown = function()
+    local ok, f = pcall(function() return PluginShutdown end)
+    if ok and type(f) == "function" then return true end
+    local ok2, g = pcall(function() return rawget(_G, "PluginShutdown") end)
+    return ok2 and type(g) == "function"
+end
 local function yes(b, good, bad) return b and H.col(H.C_GOOD, good or "yes") or H.col(H.C_WARN, bad or "no") end
 -- expected "off" states (e.g. a permission not granted) are neutral grey, not amber
 local function neutral(b, good, bad) return b and H.col(H.C_GOOD, good or "yes") or H.col(H.C_LABEL, bad or "no") end
@@ -1224,7 +1237,7 @@ local function diagRun()
             add("Resource", tostring(k), yes(loaded == true, "loaded", "not loaded"), "in use " .. tostring(inUse))
         end
     end)
-    if nres == 0 then add("Resource", "Plugin.resources", H.col(H.C_WARN, "none found"), "files go in resources/") end
+    if nres == 0 then add("Resource", "Plugin.resources", H.lbl("none (this plugin ships no resources)"), "files go in resources/") end
     local nurl = 0
     pcall(function() for _ in pairs(Plugin.urls) do nurl = nurl + 1 end end)
     add("Manifest", "urls", H.lbl(nurl), "Plugin.urls (needs httpAccess to use)")
@@ -1233,14 +1246,14 @@ local function diagRun()
     local nsub, nfail = 0, 0
     for _, n in ipairs(EVENTS) do if subs[n] then nsub = nsub + 1 elseif subs[n] == false then nfail = nfail + 1 end end
     add("Events", "subscribed", yes(nfail == 0, nsub .. " ok", nsub .. " ok, " .. nfail .. " failed"), "see Error Log for failures")
-    add("Events", "Draw firing", yes((ev.counts.Draw or 0) > 0), "frame events")
-    add("Events", "ServerLogic firing", yes((ev.counts.ServerLogic or 0) > 0), "needs to be logged in")
+    add("Events", "Draw firing", neutral((ev.counts.Draw or 0) > 0, "yes", "not yet"), "frame events")
+    add("Events", "ServerLogic firing", neutral((ev.counts.ServerLogic or 0) > 0, "yes", "not yet (log in)"), "needs to be logged in")
     -- core API
     local mouse = false
     pcall(function() mouse = Mouse.IsAvailable() == true end)
-    add("Mouse", "IsAvailable", yes(mouse), "false while the game window is unfocused")
-    add("Lua", "os.clock", yes(perf.hasClock, "available", "missing"), "for timing")
-    add("Lua", "debug.traceback", yes(hasTrace, "available", "missing"), "stack traces in the Error Log")
+    add("Mouse", "IsAvailable", neutral(mouse, "yes", "not now"), "false while the game window is unfocused")
+    add("Lua", "os.clock", neutral(perf.hasClock, "available", "not available in sandbox"), "timing falls back to Logic ticks")
+    add("Lua", "debug.traceback", neutral(hasTrace, "available", "not available in sandbox"), "Error Log shows the message and source:line instead")
     add("Lua", "io library", neutral(type(rawget(_G, "io")) == "table", "present", "not present"), "plugins are sandboxed")
     add("Lua", "require", yes(type(require) == "function", "available", "missing"), "loads this plugin's own .lua files")
     add("UI", "plugin layer", yes(helpers.ensureHoverLayer() ~= nil, "reachable", "missing"), "TOPLEVEL_V2__PLUGIN_BUILD_LAYER_TOP")
@@ -1248,13 +1261,13 @@ local function diagRun()
     add("UI", "text width", yes(fw ~= nil, math.floor(fw or 0) .. " px", "not measurable"), "Font:GetStringWidth")
     local spr = 0
     pcall(function() for _ in pairs(id.Sprite) do spr = spr + 1 end end)
-    add("IDs", "id.Sprite table", yes(spr > 0, commas(spr) .. " names", "empty"), "otherwise FromID scan")
+    add("IDs", "id.Sprite table", neutral(spr > 0, commas(spr) .. " names", "not exposed"), "otherwise FromID scan")
     local obj = nil
     pcall(function() obj = config.Obj.FromID(1).name end)
-    add("Config", "config.Obj.FromID(1)", yes(obj ~= nil, plain(obj or ""), "nil"), "item lookups")
+    add("Config", "config.Obj.FromID(1)", neutral(obj ~= nil, plain(obj or ""), "not loaded yet (log in)"), "item lookups")
     local opt = nil
     pcall(function() opt = game.options.VolumeMaster.setting end)
-    add("Options", "game.options read", yes(opt ~= nil, tostring(opt), "nil"), "read only")
+    add("Options", "game.options read", neutral(opt ~= nil, tostring(opt), "not reported"), "read only")
     add("Storage", "PersistentDB round trip", diag.dbTest or H.lbl("click to run"), "writes key rdt_selftest in this plugin")
     -- layer leak detector (FAQ 13)
     leakCheck()
@@ -1263,23 +1276,27 @@ local function diagRun()
         add("Layer IDs", "panels on plugin layer", H.lbl(L.d), "direct children, all plugins")
         add("Layer IDs", "components on plugin layer", yes(L.t < 3500, L.t .. " of 4096", L.t .. " of 4096, near the limit"), "dynamic ID limit (FAQ 13)")
         local grow = L.t - B.t
-        add("Layer IDs", "growth this session", yes(grow <= 50, (grow >= 0 and "+" or "") .. grow, "+" .. grow .. ", possible leak"), "rising after each prl = components not destroyed")
+        -- 0.5.3: the plugin layer is shared by every plugin and the Plugin
+        -- Hub, and the baseline is taken when this tab first runs, so panels
+        -- opened afterwards count as growth. That is information, not a leak;
+        -- the real limit is the 4096 total above (amber at 3500).
+        add("Layer IDs", "growth this session", H.lbl((grow >= 0 and "+" or "") .. grow .. " (all plugins, since first check)"), "a real leak shows as the total nearing 4096")
         add("Layer IDs", "this plugin's components", H.lbl(#reg), "destroyed in PluginShutdown")
     else
         add("Layer IDs", "plugin layer", H.col(H.C_WARN, "not readable"), "")
     end
-    add("Cleanup", "PluginShutdown defined", yes(type(rawget(_G, "PluginShutdown")) == "function", "yes", "missing"), "needed to destroy library-made UI (FAQ 7, 13)")
+    add("Cleanup", "PluginShutdown defined", yes(NT.hasShutdown(), "yes", "missing"), "needed to destroy library-made UI (FAQ 7, 13)")
     -- high-DPI drag test (FAQ 15)
     local px, ux = nil, nil
     pcall(function() if Mouse.IsAvailable() then px = Mouse.GetPosition().x end end)
     ux = helpers.mouseUI()
     if px and ux and ux > 0 then
         local r = px / ux
-        add("High DPI", "window px per UI unit", yes(math.abs(r - 1) < 0.05, fmt(r, 2), fmt(r, 2) .. ", scale drag deltas"), "raw coords not 1:1 on 2K/4K (FAQ 15)")
+        add("High DPI", "window px per UI unit", neutral(math.abs(r - 1) < 0.05, fmt(r, 2), fmt(r, 2) .. " (high DPI, drags are scaled)"), "raw coords not 1:1 on 2K/4K (FAQ 15)")
     else
         add("High DPI", "window px per UI unit", H.lbl("move the mouse over the game"), "FAQ 15")
     end
-    add("Lua", "os library", yes(type(rawget(_G, "os")) == "table", "present", "missing, use Logic ticks"), "FAQ 22")
+    add("Lua", "os library", neutral(type(rawget(_G, "os")) == "table" or type(os) == "table", "present", "not available in sandbox"), "Logic ticks used instead (FAQ 22)")
     add("Manifest", "requiredPermissions", H.lbl("use optionalPermissions"), "required does not work yet (FAQ 1)")
     add("Known issues", "Discord FAQ checks", #FAQ > 0 and H.lbl(#FAQ .. " FAQ entries") or H.col(H.C_WARN, "FAQ file not in build"), "see Help/FAQ")
     diag.rows = rows
@@ -1832,7 +1849,7 @@ local SUB_RULES = {
     { "Files", "every .lua file compiles", "Script", "Fix the syntax error luac reports." },
     { "Code", "PluginShutdown cleans up", "Live", "Define PluginShutdown and destroy library-made components (FAQ 13).",
         function()
-            if type(rawget(_G, "PluginShutdown")) == "function" then return "pass", "PluginShutdown is defined" end
+            if NT.hasShutdown() then return "pass", "PluginShutdown is defined" end
             return "fail", "no global PluginShutdown function"
         end },
     { "Code", "no component leak (4096 dynamic ID limit)", "Live", "Call layer:DeleteAll() before rebuilding; destroy in PluginShutdown (FAQ 13).",
@@ -2910,7 +2927,9 @@ helpers.subscribe(PLUGIN_NAME, "Logic", "rdtLogic", function()
         if lastW ~= nil then refresh() end
         lastW = w
     end
-    if ticks % 500 == 0 then pcall(leakCheck) end
+    -- 0.5.3 frame cost: the layer walk (up to 6000 components) only runs
+    -- while the panel is open and expanded
+    if ticks % 500 == 0 and not helpers.isCollapsed() then pcall(leakCheck) end
     pcall(Table.tick)
     for _, m in ipairs(NT.mods) do if m.tick then local okt, et = pcall(m.tick, state.tab == m.tab, ticks); if not okt then logError("tick " .. m.name, tostring(et)) end end end
     -- 0.2.7 Resource Monitor: one sample a second, always (cheap), so the
@@ -2923,17 +2942,29 @@ helpers.subscribe(PLUGIN_NAME, "Logic", "rdtLogic", function()
         end
         pcall(NT.monSample)
     end
+    -- 0.5.3 frame cost / layout stability: search fields are polled every
+    -- 10 ticks, but the table is rebuilt only when something changed (a
+    -- field) or on a slow timer for live tabs (every 25 ticks; Diagnostics
+    -- every 250 because it walks the layer). Static tabs (docs, commands,
+    -- settings) never refresh on a timer, so their layout cannot flip.
+    -- Nothing runs while the panel is collapsed or hidden.
     if ticks % 10 == 0 then
         if helpers.isCollapsed() then return end
+        local hid = false
+        pcall(function() local b = helpers.winBox(); hid = b == nil or b.hidden == true end)
+        if hid then return end
         local tab = state.tab
-        if tab == T_BROWSE then polled("br", brSearch, 64, function(t) br.q = t; brFilter(); tbl.page = 1 end)
-        elseif tab == T_AUDIO then polled("snd", sndSearch, 64, function(t) snd.q = t; sndFilter(); tbl.page = 1 end)
+        local changed = false
+        if tab == T_BROWSE then changed = polled("br", brSearch, 64, function(t) br.q = t; brFilter(); tbl.page = 1 end)
+        elseif tab == T_AUDIO then changed = polled("snd", sndSearch, 64, function(t) snd.q = t; sndFilter(); tbl.page = 1 end)
         elseif tab == T_FAQ or tab == T_SET or tab == T_API or tab == T_FIT or tab == T_RELOAD then
             local f = ({ [T_FAQ] = faqField, [T_SET] = setField, [T_API] = api.field, [T_FIT] = fitField, [T_RELOAD] = slugField })[tab]
-            polled("f" .. tab, f, 120, function() tbl.page = 1 end)
+            changed = polled("f" .. tab, f, 120, function() tbl.page = 1 end)
         end
         if tab == T_UI and frozen then return end
-        refresh()
+        local static = tab == T_FAQ or tab == T_SET or tab == T_API or tab == T_RELOAD or tab == T_CMD
+        local period = (tab == T_DIAG) and 250 or 30
+        if changed or (not static and ticks % period == 0) then refresh() end
     end
 end)
 

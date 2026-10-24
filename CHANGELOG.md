@@ -1,3 +1,14 @@
+## RS Dev Tools 0.5.3 (2026-10-23)
+- Tooltips no longer flicker or flip between two layouts: one owner per check (innermost control wins over its row), a short show delay, re-layout only when the text changes, offset from the pointer and clamped on screen, and the tooltip never takes hover.
+- Dropdowns open on one click and stay open until you pick an item or click outside: the opening click is ignored by the list, the box toggles once per click, the panel is raised before the list is built and the list is re-raised after any window raise, and small layout jitter no longer closes it.
+- Tooltips size to their text: measured once per text change at a fixed 260 px wrap (long text grows taller), cached, and only moved (never resized) while the text is unchanged.
+- Diagnostics cleaned up: sandbox limits (debug.traceback, os.clock, os library, id.Sprite, game.options) and not-yet states (Draw, ServerLogic, Mouse, config before login, high DPI) are neutral notes; PluginShutdown check fixed (it looked in _G, but plugin globals live in the plugin environment); layer growth is shown as information (shared layer, all plugins) and the 4096 total stays the real limit.
+- Error Log without debug.traceback records the source:line from the error message.
+- Event subscriptions made through RDT are recorded so they are all unsubscribed at shutdown.
+- Permissions tab with 6 sub-tabs: Run (command, plugin and permission pickers, a preview of the exact command, runs only on a click; ppd and poff ask for Confirm; Grant runs ppr, ppe, prl; Run is disabled if ExecuteConsoleCommand is missing), Status (this plugin's 3 permissions plus a change log), Permissions, Commands, Manifest and FAQ/Review. Claims from Discord are labelled unverified.
+- Frame cost: the panel refreshes only when something changed (or every 30 ticks on live tabs, 250 on Diagnostics, never on static tabs), and does nothing while collapsed or hidden. Tooltips skip the hit test while the mouse is still.
+- Resize grip: keeps the drag while the mouse moves off the grip, applies the size live, clamps it on screen, saves on release, and no longer fights the content-fit height.
+
 ## RS Dev Tools 0.5.2 (2026-10-23)
 - Model Sandbox uses the shared model_core.lua (same file as Rotten Potato): one copy of SetModel, box creation (hidden, click-through, disabled), the 24..900px clamp, camera and Seq helpers.
 - Shutdown: ui_helpers now also closes an open dropdown and the toast, and unsubscribes every helpers.subscribe event when the plugin unloads.

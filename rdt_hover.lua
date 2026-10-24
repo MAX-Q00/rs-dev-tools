@@ -46,7 +46,7 @@ return function(ctx)
                 elseif top.componentData ~= nil then cfg = top.componentData.objConfig end
                 if cfg ~= nil then txt = tostring(cfg.name) .. " (" .. tostring(cfg.id) .. ")" end
             end)
-            cur, curAt = txt, os.clock()
+            cur, curAt = txt, helpers.clock()
         else cur = nil end
         if state.menuCoords ~= false then
             pcall(function()
@@ -66,7 +66,7 @@ return function(ctx)
     helpers.subscribe("rdt_hover", "MiniMenuReady", "rdtHoverReady", function(ev) pcall(onReady, ev) end)
     helpers.worldHover = function()
         if state.itemHover == false or cur == nil then return nil end
-        if os.clock() - curAt > 0.5 then return nil end
+        if helpers.clock() - curAt > 0.5 then return nil end
         local open = false
         pcall(function() open = MiniMenu.IsOpen() end)
         if open then return nil end
