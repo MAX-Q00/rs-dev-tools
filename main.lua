@@ -32,7 +32,7 @@
 local PLUGIN_NAME = "RS Dev Tools"
 local SLUG = "rs-dev-tools"
 local helpers = require("ui_helpers")
-helpers.VERSION = "0.5.6"
+helpers.VERSION = "0.5.7"
 local H = helpers
 local Table = require("dt_table")
 local FaqDialog = require("faq_dialog")
@@ -2344,7 +2344,7 @@ NT.ctx = { H = H, helpers = helpers, arr = arr, kv = kv, commas = commas, fmt = 
     cmdFn = function() return NT.cmdFn() end, cmd = NT.cmd, ticks = function() return ticks end,
     reg = reg, tbl = function() return tbl end, VERSION = H.VERSION, EVENTS = EVENTS, ev = ev }
 NT.mods = {}
-pcall(function()
+local okMods, errMods = pcall(function()
     local list = require("rdt_mods")
     for _, m in ipairs(list(NT.ctx)) do
         if type(m) == "table" and m.name and m.view then
@@ -2355,6 +2355,7 @@ pcall(function()
         end
     end
 end)
+if not okMods then logError("modules", tostring(errMods)) end
 _RDT_HOOK.event = function(name, e) for _, m in ipairs(NT.mods) do if m.onEvent then pcall(m.onEvent, name, e) end end end
 local VIEWS = { viewUI, viewPlug, viewEvents, viewBrowse, viewAudio, viewSettings, viewPerf, viewGrid, viewFit, viewReload, viewFaq,
     viewDiag, viewErrors, viewApi, viewCmd, NT.viewSub, NT.viewRes, NT.viewWorld, NT.viewProbe }
