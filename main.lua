@@ -32,7 +32,7 @@
 local PLUGIN_NAME = "RS Dev Tools"
 local SLUG = "rs-dev-tools"
 local helpers = require("ui_helpers")
-helpers.VERSION = "0.5.3"
+helpers.VERSION = "0.5.4"
 local H = helpers
 local Table = require("dt_table")
 local FaqDialog = require("faq_dialog")
@@ -2623,6 +2623,9 @@ local function buildPanel(w)
     -- 0.5.0: Model Sandbox (rdt_sandbox.lua) spawns the picked item's 3D model in the game view
     btn(T_BROWSE, "Spawn on screen", 110, function() pcall(function() local e = sel[T_BROWSE]; if e and NT.ctx.sandbox then NT.ctx.sandbox.spawn("item", e.id, e.name) end end); refresh() end,
         function() return state.set == "item" and sel[T_BROWSE] ~= nil end)
+    -- 0.5.4: Give pre-fills the Give by ID tab (rdt_give.lua) with the picked item
+    btn(T_BROWSE, "Give", 44, function() pcall(function() local e = sel[T_BROWSE]; if e and NT.ctx.give then NT.ctx.give(e.id); for _, m in ipairs(NT.mods) do if m.name == "Give by ID" then state.tab = m.tab end end end end); refresh() end,
+        function() return state.set == "item" and sel[T_BROWSE] ~= nil end, "Give by ID")
     btn(T_BROWSE, "Keypad", 60, function() br.pad = not br.pad; refresh() end)
     local function padShow() pcall(function() brIdField.content = br.padStr end) end
     for dgt = 0, 9 do

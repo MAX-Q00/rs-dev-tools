@@ -11,6 +11,7 @@ local PUBLIC = {
     { "rdt_perms", function() return require("rdt_perms") end },
     { "rdt_cover", function() return require("rdt_cover") end },
     { "rdt_sandbox", function() return require("rdt_sandbox") end },
+    { "rdt_give", function() return require("rdt_give") end },
 }
 local EXTRA  -- formerly Unlimited-only
 local UNLIMITED = {
