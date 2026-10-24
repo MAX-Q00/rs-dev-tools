@@ -32,7 +32,7 @@
 local PLUGIN_NAME = "RS Dev Tools"
 local SLUG = "rs-dev-tools"
 local helpers = require("ui_helpers")
-helpers.VERSION = "0.5.8"
+helpers.VERSION = "0.5.9"
 local H = helpers
 local Table = require("dt_table")
 local FaqDialog = require("faq_dialog")
@@ -2350,14 +2350,41 @@ local okMods, errMods = pcall(function()
     -- load failure is also printed so it shows in the console, not only the
     -- in-panel Error Log.
     local specs = {}
+    -- 0.5.9: full diagnostics per module (ok, result type, error, traceback,
+    -- package.loaded before/after). A cached non-function entry from an
+    -- earlier failed load is cleared first so prl retries the file.
+    local function say(s) pcall(print, "[RS Dev Tools] " .. s) end
+    local pl = nil
+    pcall(function() if type(package) == "table" and type(package.loaded) == "table" then pl = package.loaded end end)
+    local tb = nil
+    pcall(function() if type(debug) == "table" and type(debug.traceback) == "function" then tb = debug.traceback end end)
+    say("module env: package.loaded " .. (pl and "yes" or "no") .. ", traceback " .. (tb and "yes" or "no") .. ", require " .. type(require))
     local function one(name, loader)
-        local ok, f = pcall(loader)
-        if not ok or type(f) ~= "function" then
-            logError("module " .. name, tostring(f)); pcall(print, "[RS Dev Tools] module " .. name .. " failed to load: " .. tostring(f)); return
+        local before = "n/a"
+        if pl then
+            before = type(pl[name])
+            if pl[name] ~= nil and type(pl[name]) ~= "function" then pcall(function() pl[name] = nil end) end
         end
-        local ok2, spec = pcall(f, NT.ctx)
+        local trace = nil
+        local ok, f = xpcall(loader, function(e)
+            if tb then pcall(function() trace = tb(tostring(e), 2) end) end
+            return e
+        end)
+        local after = pl and type(pl[name]) or "n/a"
+        if not ok or type(f) ~= "function" then
+            local msg = "ok=" .. tostring(ok) .. " type=" .. type(f) .. " err/result=" .. tostring(f) .. " loaded before=" .. before .. " after=" .. after
+            if trace then msg = msg .. " trace=" .. tostring(trace):gsub("\n", " | ") end
+            logError("module " .. name, msg); say("module " .. name .. " failed to load: " .. msg); return
+        end
+        local ok2, spec = xpcall(function() return f(NT.ctx) end, function(e)
+            if tb then local tr = nil; pcall(function() tr = tb(tostring(e), 2) end); if tr then return tr end end
+            return e
+        end)
         if ok2 and type(spec) == "table" then specs[#specs + 1] = spec
-        else logError("module " .. name, tostring(spec)); pcall(print, "[RS Dev Tools] module " .. name .. " failed to start: " .. tostring(spec)) end
+        else
+            local msg = "ok=" .. tostring(ok2) .. " type=" .. type(spec) .. " err=" .. tostring(spec):gsub("\n", " | ")
+            logError("module " .. name, msg); say("module " .. name .. " failed to start: " .. msg)
+        end
     end
     one("rdt_events", function() return require("rdt_events") end)
     one("rdt_world", function() return require("rdt_world") end)
