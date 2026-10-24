@@ -93,7 +93,7 @@ return function(ctx)
         pcall(function() o.mdl:SetSize(sz, sz); o.mdl:SetPos(bx, by); o.mdl.hidden = false end)
         pcall(function()
             local yaw = o.pin and o.yaw or (o.yaw - camYaw())
-            o.mdl.rotation = Vector3.new(math.rad(yaw), o.pin and 0 or camPitch(), 0)
+            local rotV = Vector3.new(math.rad(yaw), o.pin and 0 or camPitch(), 0); if not pcall(function() o.mdl.rotation = rotV end) then o.mdl:SetTransform(Vector3.new(0, 0, 0), rotV, Vector3.new(1, 1, 1), 0) end
         end)
         local hx, hy = math.floor(fx - 7), math.floor(fy + 2)
         local hideH = overlaps(pr, hx, hy, 14, 14)

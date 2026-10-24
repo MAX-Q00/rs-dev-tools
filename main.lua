@@ -32,7 +32,7 @@
 local PLUGIN_NAME = "RS Dev Tools"
 local SLUG = "rs-dev-tools"
 local helpers = require("ui_helpers")
-helpers.VERSION = "0.5.7"
+helpers.VERSION = "0.5.8"
 local H = helpers
 local Table = require("dt_table")
 local FaqDialog = require("faq_dialog")
@@ -2345,8 +2345,35 @@ NT.ctx = { H = H, helpers = helpers, arr = arr, kv = kv, commas = commas, fmt = 
     reg = reg, tbl = function() return tbl end, VERSION = H.VERSION, EVENTS = EVENTS, ev = ev }
 NT.mods = {}
 local okMods, errMods = pcall(function()
-    local list = require("rdt_mods")
-    for _, m in ipairs(list(NT.ctx)) do
+    -- 0.5.8: modules are required straight from main.lua by literal name (the
+    -- pattern Rotten Potato uses); rdt_mods.lua stays as the fallback. Each
+    -- load failure is also printed so it shows in the console, not only the
+    -- in-panel Error Log.
+    local specs = {}
+    local function one(name, loader)
+        local ok, f = pcall(loader)
+        if not ok or type(f) ~= "function" then
+            logError("module " .. name, tostring(f)); pcall(print, "[RS Dev Tools] module " .. name .. " failed to load: " .. tostring(f)); return
+        end
+        local ok2, spec = pcall(f, NT.ctx)
+        if ok2 and type(spec) == "table" then specs[#specs + 1] = spec
+        else logError("module " .. name, tostring(spec)); pcall(print, "[RS Dev Tools] module " .. name .. " failed to start: " .. tostring(spec)) end
+    end
+    one("rdt_events", function() return require("rdt_events") end)
+    one("rdt_world", function() return require("rdt_world") end)
+    one("rdt_tree", function() return require("rdt_tree") end)
+    one("rdt_shapes", function() return require("rdt_shapes") end)
+    one("rdt_db", function() return require("rdt_db") end)
+    one("rdt_prof", function() return require("rdt_prof") end)
+    one("rdt_perms", function() return require("rdt_perms") end)
+    one("rdt_cover", function() return require("rdt_cover") end)
+    one("rdt_sandbox", function() return require("rdt_sandbox") end)
+    one("rdt_give", function() return require("rdt_give") end)
+    one("rdt_auto", function() return require("rdt_auto") end)
+    one("rdt_visual", function() return require("rdt_visual") end)
+    one("rdt_probe", function() return require("rdt_probe") end)
+    if #specs == 0 then local okL, list = pcall(require, "rdt_mods"); if okL and type(list) == "function" then specs = list(NT.ctx) end end
+    for _, m in ipairs(specs) do
         if type(m) == "table" and m.name and m.view then
             TABS[#TABS + 1] = m.name
             m.tab = #TABS
@@ -2355,7 +2382,7 @@ local okMods, errMods = pcall(function()
         end
     end
 end)
-if not okMods then logError("modules", tostring(errMods)) end
+if not okMods then logError("modules", tostring(errMods)); pcall(print, "[RS Dev Tools] module tabs failed: " .. tostring(errMods)) end
 _RDT_HOOK.event = function(name, e) for _, m in ipairs(NT.mods) do if m.onEvent then pcall(m.onEvent, name, e) end end end
 local VIEWS = { viewUI, viewPlug, viewEvents, viewBrowse, viewAudio, viewSettings, viewPerf, viewGrid, viewFit, viewReload, viewFaq,
     viewDiag, viewErrors, viewApi, viewCmd, NT.viewSub, NT.viewRes, NT.viewWorld, NT.viewProbe }
